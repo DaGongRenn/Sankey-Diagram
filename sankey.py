@@ -236,6 +236,31 @@ def _ribbon_polygon(rb):
     return top + bot[::-1]
 
 
+def _draw_gradient_ribbon(img, rb):
+    """缎带:沿流向(水平)做「节点色 → 中枢色」线性渐变填充,
+    使左右两侧与中枢的颜色平滑过渡、衔接处不割裂。
+    做法:在缎带包围盒内生成横向渐变图 + 用多边形当蒙版贴上去。"""
+    poly = _ribbon_polygon(rb)
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    x0, y0 = int(np.floor(min(xs))), int(np.floor(min(ys)))
+    x1, y1 = int(np.ceil(max(xs))), int(np.ceil(max(ys)))
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    c_node = np.array(rb["color"], dtype=np.float32)
+    c_hub = np.array(C["hub"], dtype=np.float32)
+    t = np.linspace(0.0, 1.0, w, dtype=np.float32)[:, None]      # 0=左边缘, 1=右边缘
+    # 左缎带:节点在左→中枢在右;右缎带:中枢在左→节点在右
+    grad = (c_node * (1 - t) + c_hub * t) if rb["is_left"] else (c_hub * (1 - t) + c_node * t)
+    grad = np.broadcast_to(grad[None, :, :], (h, w, 3))
+    grad_img = Image.fromarray(np.ascontiguousarray(grad, dtype=np.uint8), "RGB")
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).polygon([(px - x0, py - y0) for px, py in poly],
+                                 fill=L["ribbon_alpha"])
+    img.paste(grad_img, (x0, y0), mask)
+
+
 def _background():
     """近黑→深蓝竖向渐变 + 细网格,监控大屏质感。"""
     a = np.linspace(0, 1, config.H).reshape(config.H, 1, 1)
@@ -328,18 +353,16 @@ def draw_frame(scene: dict, frame_index: int) -> Image.Image:
     base = np.clip(base + gl[..., :3] * alpha, 0, 255).astype(np.uint8)
     img = Image.fromarray(base, "RGB")
 
+    # ---- 缎带:节点色→中枢色 渐变填充(贴在 img 上,在 hub/节点之下)----
+    for rb in lay["ribbons"]:
+        _draw_gradient_ribbon(img, rb)
+
     d = ImageDraw.Draw(img, "RGBA")
 
-    # ---- 缎带(半透明)----
-    for rb in lay["ribbons"]:
-        d.polygon(_ribbon_polygon(rb), fill=(*rb["color"], L["ribbon_alpha"]))
-
-    # ---- 中列 hub ----
+    # ---- 中列 hub:直边竖条(无圆弧),颜色=缎带衔接处的中枢色,左右无缝相连 ----
     hub = lay["hub"]
-    hub_r = min(L["hub_w"] / 2, hub["h"] / 2)     # 早盘总额≈0 时 hub 很矮,避免圆角半径过大报错
-    d.rounded_rectangle([hub["x0"], hub["y0"], hub["x1"], hub["y0"] + hub["h"]],
-                        radius=hub_r, fill=(*C["hub"], 230),
-                        outline=(*C["hub"], 255), width=2)
+    d.rectangle([hub["x0"], hub["y0"], hub["x1"], hub["y0"] + hub["h"]],
+                fill=(*C["hub"], 235))
     fh = font_cjk(34)
     d.text((L["hub_x"], hub["y0"] - 30), config.HUB_LABEL, font=fh,
            fill=C["title"], anchor="mm")
