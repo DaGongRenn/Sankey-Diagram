@@ -183,11 +183,13 @@ def compute_layout(values: dict[str, float], inflow_names, outflow_names, scale:
             nm, y0, h = nd["name"], nd["y0"], nd["h"]
             is_bal = nm in (BAL_LEFT, BAL_RIGHT)
             if is_bal:
-                col = C["balance"]
+                col = C["balance_in"] if nm == BAL_LEFT else C["balance_out"]
                 val = nd["h"] / scale if scale > 0 else 0.0  # 反推近似值用于标注
                 disp = bal_left if nm == BAL_LEFT else bal_right
             else:
-                col = value_color(values[nm])
+                # 颜色严格按"列"定:左列恒绿(净流出)、右列恒红(净流入),
+                # 同一侧永不混色。板块归属由整段最后一帧定死,全程不变。
+                col = C["outflow"] if is_left else C["inflow"]
                 disp = values[nm]
             nodes.append({"name": nm, "x": x_center, "y0": y0, "h": h,
                           "color": col, "value": disp, "is_left": is_left,
@@ -249,7 +251,7 @@ def _draw_gradient_ribbon(img, rb):
     if w <= 0 or h <= 0:
         return
     c_node = np.array(rb["color"], dtype=np.float32)
-    c_hub = np.array(C["hub"], dtype=np.float32)
+    c_hub = np.array(C["core"], dtype=np.float32)                # 汇入中枢柔光核心色
     t = np.linspace(0.0, 1.0, w, dtype=np.float32)[:, None]      # 0=左边缘, 1=右边缘
     # 左缎带:节点在左→中枢在右;右缎带:中枢在左→节点在右
     grad = (c_node * (1 - t) + c_hub * t) if rb["is_left"] else (c_hub * (1 - t) + c_node * t)
@@ -332,6 +334,9 @@ def draw_frame(scene: dict, frame_index: int) -> Image.Image:
     p = frame_index / max(1, config.TOTAL_FRAMES - 1)
     values = interp_values(scene["keyframes"], p, scene["names"])
     lay = compute_layout(values, scene["inflow"], scene["outflow"], scene["scale"])
+    # 中枢用"柔光核心":左右缎带都延伸到中线相接(无硬竖条),交汇处靠辉光桥接
+    for rb in lay["ribbons"]:
+        rb["x_hub"] = L["hub_x"]
 
     img = _background()
 
@@ -353,33 +358,38 @@ def draw_frame(scene: dict, frame_index: int) -> Image.Image:
     base = np.clip(base + gl[..., :3] * alpha, 0, 255).astype(np.uint8)
     img = Image.fromarray(base, "RGB")
 
-    # ---- 缎带:节点色→中枢色 渐变填充(贴在 img 上,在 hub/节点之下)----
+    # ---- 缎带:节点色→核心色 渐变填充,左右延伸到中线相接 ----
     for rb in lay["ribbons"]:
         _draw_gradient_ribbon(img, rb)
 
-    d = ImageDraw.Draw(img, "RGBA")
-
-    # ---- 中列 hub:直边竖条(无圆弧),颜色=缎带衔接处的中枢色,左右无缝相连 ----
+    # ---- 中枢柔光核心:中线一道经高斯模糊的冷白光柱(无硬条),桥接左右交汇 ----
     hub = lay["hub"]
-    d.rectangle([hub["x0"], hub["y0"], hub["x1"], hub["y0"] + hub["h"]],
-                fill=(*C["hub"], 235))
-    fh = font_cjk(34)
-    d.text((L["hub_x"], hub["y0"] - 30), config.HUB_LABEL, font=fh,
+    cw = L["hub_w"] / 2 + 2
+    core = Image.new("RGBA", (config.W, config.H), (0, 0, 0, 0))
+    ImageDraw.Draw(core).rectangle(
+        [L["hub_x"] - cw, hub["y0"], L["hub_x"] + cw, hub["y0"] + hub["h"]],
+        fill=(*C["core"], 175))
+    core = core.filter(ImageFilter.GaussianBlur(18))
+    base = np.asarray(img, dtype=np.float32)
+    cc = np.asarray(core, dtype=np.float32)
+    a = cc[..., 3:4] / 255.0 * 0.9                # 偏暗的发光强度
+    img = Image.fromarray(np.clip(base + cc[..., :3] * a, 0, 255).astype(np.uint8), "RGB")
+
+    d = ImageDraw.Draw(img, "RGBA")
+    d.text((L["hub_x"], hub["y0"] - 30), config.HUB_LABEL, font=font_cjk(34),
            fill=C["title"], anchor="mm")
     # 数字用科技字体、单位「亿」用中文字体(Bahnschrift 无 CJK 字形会出豆腐块)
     tot_num = f"{lay['total']:.0f}"
-    wn = font_tech(30).getlength(tot_num)
     d.text((L["hub_x"] - 9, hub["y0"] + hub["h"] + 28), tot_num,
            font=font_tech(30), fill=C["text_dim"], anchor="rm")
-    d.text((L["hub_x"] - 9 + 2, hub["y0"] + hub["h"] + 28), "亿",
+    d.text((L["hub_x"] - 7, hub["y0"] + hub["h"] + 28), "亿",
            font=font_cjk(24), fill=C["text_dim"], anchor="lm")
 
     # ---- 节点条带 + 描边 + 标注 ----
     for nd in lay["nodes"]:
         x0, x1 = nd["x"] - L["node_w"] / 2, nd["x"] + L["node_w"] / 2
-        d.rounded_rectangle([x0, nd["y0"], x1, nd["y0"] + nd["h"]],
-                            radius=min(L["node_w"] / 2, nd["h"] / 2),
-                            fill=(*nd["color"], 255), outline=(255, 255, 255, 60), width=1)
+        d.rectangle([x0, nd["y0"], x1, nd["y0"] + nd["h"]],
+                    fill=(*nd["color"], 255), outline=(255, 255, 255, 60), width=1)
         ycen = nd["y0"] + nd["h"] / 2
         if nd["is_bal"]:
             name = "增量入场" if nd["name"] == BAL_LEFT else "资金离场"
