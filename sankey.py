@@ -304,8 +304,8 @@ def _label_two_color(d, x, y, name, val_str, color, anchor_left):
 # ====================================================================
 # 场景准备 + 单帧绘制
 # ====================================================================
-def prepare_scene(keyframes: list[tuple], session: str, date_label: str) -> dict:
-    """整段只算一次:固定显示集 + 标题 + 固定比例尺。"""
+def prepare_scene(keyframes, session, date_label, market_kf=None, market_prev_kf=None) -> dict:
+    """整段只算一次:固定显示集 + 标题 + 固定比例尺 + 全市场氛围条序列。"""
     last_boards = keyframes[-1][1]
     inflow, outflow = build_display_set(last_boards, config.TOP_N)
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
@@ -326,7 +326,7 @@ def prepare_scene(keyframes: list[tuple], session: str, date_label: str) -> dict
              inflow, outflow, max_total, scale)
     return {"keyframes": keyframes, "inflow": inflow, "outflow": outflow,
             "names": inflow + outflow, "session": session, "title": title,
-            "scale": scale}
+            "scale": scale, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}
 
 
 def draw_frame(scene: dict, frame_index: int) -> Image.Image:
@@ -426,3 +426,59 @@ def _draw_overlays(d, scene, p):
     # 底部免责说明
     d.text((config.W / 2, config.H - 70), config.DISCLAIMER,
            font=font_cjk(24), fill=C["text_dim"], anchor="mm")
+    # 顶部全市场氛围条(在图例下方、主图上方;采得稀,随帧插值)
+    if config.SHOW_MARKET_BAR and scene.get("market_kf"):
+        mk = _interp_market(scene["market_kf"], p)
+        if mk:
+            prev = _interp_market(scene.get("market_prev_kf") or [], p)
+            delta = (mk[2] - prev[2]) if prev else 0.0
+            _draw_market_bar(d, mk[0], mk[1], mk[2], delta, prev is not None)
+
+
+def _interp_market(kf, p):
+    """全市场序列在进度 p 处插值 →(up, down, turnover);空则 None。"""
+    if not kf:
+        return None
+    if p <= kf[0][0]:
+        return kf[0][1], kf[0][2], kf[0][3]
+    if p >= kf[-1][0]:
+        return kf[-1][1], kf[-1][2], kf[-1][3]
+    for i in range(len(kf) - 1):
+        p0, u0, d0, t0 = kf[i]
+        p1, u1, d1, t1 = kf[i + 1]
+        if p0 <= p <= p1:
+            e = ease_in_out(0.0 if p1 == p0 else (p - p0) / (p1 - p0))
+            return (u0 * (1 - e) + u1 * e, d0 * (1 - e) + d1 * e, t0 * (1 - e) + t1 * e)
+    return kf[-1][1], kf[-1][2], kf[-1][3]
+
+
+def _draw_market_bar(d, up, down, turnover, delta, has_delta):
+    """涨跌家数分段条 + 成交额 + 较昨量变。小巧克制,不喧宾夺主。"""
+    M = config.MARKET_BAR
+    up_i, dn_i = int(round(up)), int(round(down))
+    red, green, dim = C["inflow"], C["outflow"], C["text_dim"]
+    fc = font_cjk(M["font_count"])
+    # 涨跌家数:跌(绿)左、涨(红)右
+    d.text((M["x0"], M["y_counts"]), f"跌 {dn_i}", font=fc, fill=green, anchor="lm")
+    d.text((M["x1"], M["y_counts"]), f"涨 {up_i}", font=fc, fill=red, anchor="rm")
+    # 分段条:宽度 ∝ 家数,中间留一道斜缝
+    x0, x1, by, bh = M["x0"], M["x1"], M["bar_y"], M["bar_h"]
+    split = x0 + (x1 - x0) * dn_i / max(up_i + dn_i, 1)
+    d.rounded_rectangle([x0, by, max(x0 + bh, split - 5), by + bh], radius=bh / 2, fill=(*green, 235))
+    d.rounded_rectangle([min(x1 - bh, split + 5), by, x1, by + bh], radius=bh / 2, fill=(*red, 235))
+    # 成交额 + 较昨量变(整体居中,字更小)
+    fj = font_cjk(M["font_turn"])
+    y = M["y_turnover"]
+    left = f"成交 {turnover:.0f}亿"
+    if has_delta:
+        tag = "放量" if delta >= 0 else "缩量"
+        dcol = red if delta >= 0 else green
+        dstr = f"{tag} {delta:+.0f}亿"
+        sep = "   ·   较昨 "
+        wl, ws, wd = fj.getlength(left), fj.getlength(sep), fj.getlength(dstr)
+        x = config.W / 2 - (wl + ws + wd) / 2
+        d.text((x, y), left, font=fj, fill=dim, anchor="lm"); x += wl
+        d.text((x, y), sep, font=fj, fill=dim, anchor="lm"); x += ws
+        d.text((x, y), dstr, font=fj, fill=dcol, anchor="lm")
+    else:
+        d.text((config.W / 2, y), left, font=fj, fill=dim, anchor="mm")

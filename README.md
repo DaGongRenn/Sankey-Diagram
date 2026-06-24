@@ -89,9 +89,14 @@ TOP_N = 8                   # 流入/流出各取 Top N 作为全程固定显示
 DURATION = 18 ; FPS = 30    # → 总渲染帧数 540(成片时长锁死,采集多少帧由它反推)
 SAMPLE_INTERVAL_MIN = 2     # 采集间隔;改它=改关键帧密度,渲染自适应,主逻辑不动
 W, H = 1080, 1920           # 抖音竖屏 9:16
+WATERMARK = "@主力去哪了"    # 水印 / 频道 id
+SHOW_MARKET_BAR = True       # 顶部全市场氛围条(涨跌家数+成交额+较昨量变)
+MARKET_EVERY = 3             # 氛围条采得稀:每 3 次资金流轮询采一次(≈6min/点)
 TOP_N / MIN_BAND_PX / COLORS / FONT_* / LAYOUT / CRF ...   # 配色、字体、布局、码率
 ```
 只改 `SAMPLE_INTERVAL_MIN / FPS / DURATION` 即可调节细节/平滑度,不动主逻辑。采集越密→关键帧越多、细节越足;越疏→插值占比越大、越平滑。
+
+> **顶部氛围条**:涨跌家数(akshare 乐咕)+ 两市成交额(东财指数 f6)+ 较昨同时刻量变。采集失败自动隐藏;「较昨」首日无基线时省略,次日起靠每日 `MARKET_*.jsonl` 序列(CI 用 `market-baseline` artifact 跨日衔接)自动迭代。
 
 ---
 

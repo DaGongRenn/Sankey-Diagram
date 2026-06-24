@@ -52,7 +52,12 @@ def main():
         log.error("session=%s 窗口内无有效关键帧(可能采集时段不匹配)。", args.session)
         sys.exit(2)
 
-    scene = sankey.prepare_scene(keyframes, args.session, date_label(date_str))
+    # 全市场氛围条:今日序列 + 上一交易日序列(较昨量变);缺失则自动隐藏/省略
+    market_kf = snapshots.build_market_keyframes(snapshots.load_market(date_str), args.session)
+    prev_market_kf = snapshots.build_market_keyframes(snapshots.find_prev_market(date_str), args.session)
+    log.info("全市场氛围条:今日点=%d 昨日点=%d", len(market_kf), len(prev_market_kf))
+    scene = sankey.prepare_scene(keyframes, args.session, date_label(date_str),
+                                 market_kf, prev_market_kf)
     out_path = config.OUT_DIR / f"{args.session}_{date_str}.mp4" if not args.out else args.out
     frames_to_mp4(scene, out_path)
 

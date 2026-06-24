@@ -77,10 +77,32 @@ def synth_day(date_str: str):
     log.info("合成 %d 个快照 → %s", n, path.name)
 
 
+PREV_DATE = "2098-12-31"   # 合成"昨天"的全市场序列,用于演示较昨量变
+
+
+def synth_market(date_str: str, turnover_final: float, seed: int):
+    """合成一天的全市场序列(涨跌家数 + 成交额累计)。"""
+    p = snapshots.market_path(date_str)
+    if p.exists():
+        p.unlink()
+    rng = np.random.default_rng(seed)
+    times = _trading_times(date_str)
+    n = len(times)
+    for i, t in enumerate(times):
+        frac = (i + 1) / n
+        turnover = turnover_final * frac                      # 成交额随盘中累计
+        down = int(3400 + 700 * frac + rng.normal(0, 40))     # 跌家数随盘走弱而增
+        up = int(2100 - 680 * frac + rng.normal(0, 40))
+        snapshots.append_market(date_str, max(up, 0), max(down, 0), turnover,
+                                ts=t.isoformat(timespec="seconds"))
+
+
 def render_session(session: str) -> bool:
     snaps = snapshots.load_snapshots(SYN_DATE, SYN_KIND)
     kf = snapshots.build_keyframes(snaps, session)
-    scene = sankey.prepare_scene(kf, session, date_label(SYN_DATE))
+    mkf = snapshots.build_market_keyframes(snapshots.load_market(SYN_DATE), session)
+    pmkf = snapshots.build_market_keyframes(snapshots.find_prev_market(SYN_DATE), session)
+    scene = sankey.prepare_scene(kf, session, date_label(SYN_DATE), mkf, pmkf)
     out = config.OUT_DIR / f"selfcheck_{session}.mp4"
     frames_to_mp4(scene, out)
 
@@ -102,6 +124,8 @@ def main():
              config.DURATION, config.FPS, config.TOTAL_FRAMES, config.W, config.H,
              config.SAMPLE_INTERVAL_MIN, config.TOP_N)
     synth_day(SYN_DATE)
+    synth_market(PREV_DATE, 34660, seed=11)   # 昨天:总额更高 → 今天显示缩量
+    synth_market(SYN_DATE, 33069, seed=12)     # 今天 ≈33069亿,收盘较昨 ≈ −1591亿
     ok = all(render_session(s) for s in ("midday", "close"))
     if ok:
         log.info("✅ 自检通过:渲染链路 OK。")

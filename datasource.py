@@ -128,6 +128,69 @@ def fetch_snapshot(kind: str | None = None) -> dict[str, float]:
         return _fetch_akshare(kind)
 
 
+# ----------------------------------------------------------------------
+# 全市场氛围条:涨跌家数 + 两市成交额
+# ----------------------------------------------------------------------
+def _fetch_breadth() -> tuple[int, int]:
+    """全市场上涨/下跌家数(akshare 乐咕)。"""
+    try:
+        import akshare as ak
+    except Exception as e:
+        raise DataSourceError(f"akshare 未安装: {e}")
+    df = ak.stock_market_activity_legu()
+    m = {str(r.iloc[0]): r.iloc[1] for _, r in df.iterrows()}
+
+    def pick(key):
+        for k, v in m.items():
+            if key in k:
+                try:
+                    return int(float(v))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    up, down = pick("上涨"), pick("下跌")
+    if up is None or down is None:
+        raise DataSourceError(f"涨跌家数解析失败: {list(m)[:6]}")
+    return up, down
+
+
+def _fetch_turnover() -> float:
+    """两市总成交额(亿元):东财 ulist 取上证/深证/北证指数 f6(元)求和。"""
+    secids = ",".join(config.MARKET_TURNOVER_SECIDS)
+    last_err = None
+    for attempt in range(config.HTTP_RETRIES):
+        host = config.EM_HOSTS[attempt % len(config.EM_HOSTS)]
+        url = f"https://{host}/api/qt/ulist.np/get"
+        params = {"secids": secids, "fields": "f6", "fltt": 2, "invt": 2,
+                  "ut": config.EM_UT, "_": int(time.time() * 1000)}
+        try:
+            r = requests.get(url, params=params, headers=config.HTTP_HEADERS,
+                             timeout=config.HTTP_TIMEOUT)
+            r.raise_for_status()
+            diff = (r.json().get("data") or {}).get("diff") or []
+            items = diff.values() if isinstance(diff, dict) else diff
+            total = 0.0
+            for it in items:
+                v = it.get("f6")
+                if v not in (None, "-", ""):
+                    total += float(v)
+            if total > 0:
+                return total / 1e8
+            last_err = DataSourceError("成交额为 0")
+        except Exception as e:
+            last_err = e
+        time.sleep(config.HTTP_BACKOFF ** attempt)
+    raise DataSourceError(f"成交额抓取失败: {last_err}")
+
+
+def fetch_market_overview() -> dict:
+    """全市场:{up, down, turnover(亿)}。任一失败抛 DataSourceError(采集端 best-effort)。"""
+    up, down = _fetch_breadth()
+    turnover = _fetch_turnover()
+    return {"up": up, "down": down, "turnover": turnover}
+
+
 if __name__ == "__main__":
     # 手动单测:python datasource.py
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

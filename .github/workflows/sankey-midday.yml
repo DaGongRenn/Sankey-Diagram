@@ -29,6 +29,18 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
+      # 取昨日全市场基线(顶部氛围条的"较昨量变"用);没有则自动省略那半行
+      - name: 取昨日全市场基线
+        if: ${{ inputs.dry_run != true }}
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: sankey-close.yml
+          name: market-baseline
+          path: data
+          workflow_conclusion: success
+          if_no_artifact_found: warn
+
       - name: 采集上午 + 渲染午盘
         id: render
         env:
@@ -62,7 +74,7 @@ jobs:
           subject: ${{ steps.render.outputs.subject }}
           body: |
             ${{ steps.render.outputs.label }} 午盘(09:30–11:30)板块资金流向「动态桑基图」,见附件,下载即可发布。
-            数据来源:东方财富,仅作信息整理,不构成投资建议。
+            据公开市场数据整理 · 仅供参考,不构成投资建议。
           attachments: ${{ steps.render.outputs.file }}
 
       - name: 上传上午快照(供收盘任务衔接)

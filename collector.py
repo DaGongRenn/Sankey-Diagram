@@ -24,8 +24,8 @@ import time
 from datetime import datetime
 
 import config
-from datasource import fetch_snapshot
-from snapshots import TZ, now_tz, today_str, append_snapshot
+from datasource import fetch_snapshot, fetch_market_overview
+from snapshots import TZ, now_tz, today_str, append_snapshot, append_market
 
 log = logging.getLogger("collector")
 
@@ -80,16 +80,26 @@ def poll_window(date_str: str, kind: str, start: str, end: str) -> int:
     n = 0
     while now_tz() < end_dt:
         t0 = time.time()
+        ok = False
         try:
             boards = fetch_snapshot(kind)
             ts = append_snapshot(date_str, boards, kind)
             n += 1
+            ok = True
             inflow = sum(v for v in boards.values() if v > 0)
             outflow = sum(v for v in boards.values() if v < 0)
             log.info("[%s] 第%d采 板块=%d 流入合计=%.1f亿 流出合计=%.1f亿 (%.1fs)",
                      ts[11:19], n, len(boards), inflow, outflow, time.time() - t0)
         except Exception as ex:
             log.error("采集失败(跳过本次,不中断整天): %s", ex)
+        # 全市场氛围条:采得稀(每 MARKET_EVERY 次成功轮询采一次),best-effort,不影响主采集
+        if ok and config.SHOW_MARKET_BAR and (n - 1) % config.MARKET_EVERY == 0:
+            try:
+                mo = fetch_market_overview()
+                append_market(date_str, mo["up"], mo["down"], mo["turnover"])
+                log.info("  [全市场] 涨%d 跌%d 成交%.0f亿", mo["up"], mo["down"], mo["turnover"])
+            except Exception as me:
+                log.warning("  全市场指标抓取失败(跳过): %s", me)
         remain = (end_dt - now_tz()).total_seconds()
         if remain <= 0:
             break

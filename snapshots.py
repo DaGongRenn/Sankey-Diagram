@@ -119,6 +119,63 @@ def progress_to_clock(p: float, session: str) -> str:
 
 
 # ---------------------- 关键帧 ----------------------
+# ---------------------- 全市场氛围条:涨跌家数 + 成交额(独立稀疏序列)----------------------
+def market_path(date_str: str):
+    return config.DATA_DIR / f"MARKET_{date_str}.jsonl"      # 全市场,不分 kind
+
+
+def append_market(date_str: str, up: int, down: int, turnover: float, ts: str | None = None) -> str:
+    ts = ts or now_tz().isoformat(timespec="seconds")
+    rec = {"ts": ts, "up": int(up), "down": int(down), "turnover": float(turnover)}
+    with open(market_path(date_str), "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return ts
+
+
+def load_market(date_str: str) -> list[dict]:
+    p = market_path(date_str)
+    if not p.exists():
+        return []
+    recs: dict[str, dict] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+            recs[r["ts"]] = r
+        except Exception:
+            continue
+    return [recs[ts] for ts in sorted(recs)]
+
+
+def find_prev_market(date_str: str) -> list[dict]:
+    """取「上一个有数据的交易日」的全市场序列(用于较昨量变)。本地天然续存;
+    CI 上靠 artifact 把昨日 MARKET 文件下载进 data/,这里同样能找到。"""
+    prev_date, prev_file = None, None
+    for f in config.DATA_DIR.glob("MARKET_*.jsonl"):
+        d = f.stem.replace("MARKET_", "")
+        if d < date_str and (prev_date is None or d > prev_date):
+            prev_date, prev_file = d, f
+    return load_market(prev_date) if prev_date else []
+
+
+def build_market_keyframes(records: list[dict], session: str) -> list[tuple]:
+    """全市场序列 → [(progress, up, down, turnover)],progress 严格递增。"""
+    kf = []
+    for r in records:
+        p = map_progress(r["ts"], session)
+        if p is None:
+            continue
+        kf.append((p, int(r["up"]), int(r["down"]), float(r["turnover"])))
+    if not kf:
+        return []
+    dedup = {}
+    for p, u, dn, to in sorted(kf, key=lambda x: x[0]):
+        dedup[round(p, 5)] = (p, u, dn, to)
+    return [dedup[k] for k in sorted(dedup)]
+
+
 def build_keyframes(snapshots: list[dict], session: str) -> list[tuple]:
     """把快照序列转成关键帧 [(progress, boards, clock_str), ...],progress 严格递增。
 
