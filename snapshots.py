@@ -1,0 +1,142 @@
+# -*- coding: utf-8 -*-
+"""
+snapshots.py —— 快照落盘/读取/按 session 切窗口 + 抽关键帧 + 时间轴映射。
+
+落盘格式:data/{KIND}_{YYYY-MM-DD}.jsonl,一行一个快照:
+    {"ts": "2026-06-24T09:32:05+08:00", "boards": {"半导体": 12.34, ...}}
+追加写,天然支持崩溃续跑;读取时按 ts 去重并排序。
+
+时间轴(关键):把「交易时钟」映射成 0~1 的视频进度。收盘视频会把午休
+11:30–13:00 从轴上剔除(动画连续):上午 120 分钟映射到 [0,0.5],
+下午 120 分钟映射到 [0.5,1]。
+"""
+from __future__ import annotations
+import json
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import config
+
+log = logging.getLogger("snapshots")
+TZ = ZoneInfo(config.TZ)
+
+
+# ---------------------- 时间小工具 ----------------------
+def now_tz() -> datetime:
+    return datetime.now(TZ)
+
+
+def today_str() -> str:
+    return now_tz().strftime("%Y-%m-%d")
+
+
+def _clock_min(hhmm: str) -> int:
+    """'09:30' -> 570(当天的第几分钟)"""
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def session_total_minutes(session: str) -> int:
+    """该 session 覆盖的「交易分钟」总数(午盘 120,收盘 240)。"""
+    return sum(_clock_min(e) - _clock_min(s) for s, e in config.SESSION_WINDOWS[session])
+
+
+# ---------------------- 落盘 / 读取 ----------------------
+def daily_path(date_str: str, kind: str | None = None):
+    kind = (kind or config.SECTOR_KIND).upper()
+    return config.DATA_DIR / f"{kind}_{date_str}.jsonl"
+
+
+def append_snapshot(date_str: str, boards: dict[str, float],
+                    kind: str | None = None, ts: str | None = None) -> str:
+    """追加一个快照到当日文件。ts 缺省取当前北京时间。"""
+    ts = ts or now_tz().isoformat(timespec="seconds")
+    rec = {"ts": ts, "boards": boards}
+    with open(daily_path(date_str, kind), "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return ts
+
+
+def load_snapshots(date_str: str, kind: str | None = None) -> list[dict]:
+    """读当日全部快照,按 ts 去重(保留最后一次)并按时间升序。"""
+    p = daily_path(date_str, kind)
+    if not p.exists():
+        return []
+    recs: dict[str, dict] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+            recs[r["ts"]] = r["boards"]
+        except Exception:
+            continue
+    return [{"ts": ts, "boards": b} for ts, b in sorted(recs.items())]
+
+
+# ---------------------- 时间轴映射 ----------------------
+def map_progress(ts_iso: str, session: str, grace_min: float = 6.0):
+    """把一个快照时间戳映射到 [0,1] 的视频进度;不在本 session 窗口内返回 None。
+
+    - 开盘前 -> None(忽略)
+    - 午休段 -> clamp 到上午收尾(0.5),累计值午休不变,正好复用 11:30 的值
+    - 收盘后 grace 分钟内 -> 1.0;再久 -> None(防止把别的时段串进来)
+    """
+    total = session_total_minutes(session)
+    dt = datetime.fromisoformat(ts_iso).astimezone(TZ)
+    t = dt.hour * 60 + dt.minute + dt.second / 60.0
+    wins = [(_clock_min(s), _clock_min(e)) for s, e in config.SESSION_WINDOWS[session]]
+    first_start, last_end = wins[0][0], wins[-1][1]
+    if t < first_start - 1e-6:
+        return None
+    if t > last_end + grace_min:
+        return None
+    offset = 0
+    for cs, ce in wins:
+        if t <= ce:
+            inside = min(max(t, cs), ce)          # 落在午休则贴到段首/段尾
+            return (offset + (inside - cs)) / total
+        offset += ce - cs
+    return 1.0                                     # 收盘后 grace 内
+
+
+def progress_to_clock(p: float, session: str) -> str:
+    """进度 [0,1] -> 'HH:MM' 交易时钟(给成片右上角时间戳用,午休已折叠)。"""
+    total = session_total_minutes(session)
+    tmin = max(0.0, min(1.0, p)) * total
+    offset = 0
+    for s, e in config.SESSION_WINDOWS[session]:
+        cs, ce = _clock_min(s), _clock_min(e)
+        seglen = ce - cs
+        if tmin <= offset + seglen + 1e-6:
+            clock = cs + (tmin - offset)
+            return f"{int(clock) // 60:02d}:{int(round(clock)) % 60:02d}"
+        offset += seglen
+    ce = _clock_min(config.SESSION_WINDOWS[session][-1][1])
+    return f"{ce // 60:02d}:{ce % 60:02d}"
+
+
+# ---------------------- 关键帧 ----------------------
+def build_keyframes(snapshots: list[dict], session: str) -> list[tuple]:
+    """把快照序列转成关键帧 [(progress, boards, clock_str), ...],progress 严格递增。
+
+    每个 2 分钟快照=一个关键帧;相邻关键帧之间由 sankey 模块做 ease-in-out 插值。
+    """
+    kf = []
+    for rec in snapshots:
+        p = map_progress(rec["ts"], session)
+        if p is None:
+            continue
+        kf.append((p, rec["boards"], progress_to_clock(p, session)))
+    if not kf:
+        return []
+    # 同 progress 去重(保留靠后/最新),确保 progress 严格递增,便于插值定位
+    dedup: dict[float, tuple] = {}
+    for p, b, clk in sorted(kf, key=lambda x: x[0]):
+        dedup[round(p, 5)] = (p, b, clk)
+    keyframes = [dedup[k] for k in sorted(dedup)]
+    log.info("session=%s 关键帧=%d (覆盖进度 %.2f→%.2f)",
+             session, len(keyframes), keyframes[0][0], keyframes[-1][0])
+    return keyframes

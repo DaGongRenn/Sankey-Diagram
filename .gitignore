@@ -1,0 +1,12 @@
+# 生成产物(CI 用 artifact 衔接;本地可保留),不入库
+out/
+data/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 编辑器/系统
+.claude/
+.vscode/
+.DS_Store

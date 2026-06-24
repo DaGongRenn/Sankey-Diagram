@@ -1,0 +1,8 @@
+# A股板块资金桑基图 —— Python 依赖
+# 渲染只需 requests + pillow + numpy;akshare 仅作东财直连失败时的兜底。
+requests>=2.28
+pillow>=10
+numpy>=1.24
+akshare>=1.13        # 兜底数据源(可选,东财直连可用时用不到)
+tzdata>=2024.1       # Windows/精简镜像上 zoneinfo 需要的时区库
+imageio-ffmpeg>=0.4  # 提供可移植 ffmpeg 二进制(找不到系统 ffmpeg 时用)
