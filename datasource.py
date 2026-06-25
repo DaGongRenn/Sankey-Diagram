@@ -45,48 +45,13 @@ def _filter_boards(data: dict[str, float]) -> dict[str, float]:
 # ----------------------------------------------------------------------
 # 主数据源:东方财富 clist
 # ----------------------------------------------------------------------
-def _fetch_eastmoney(kind: str) -> dict[str, float]:
-    """从东财 clist 拉一页概念/行业板块主力净流入。轮换 host + 重试。"""
-    fs = config.EM_FS[kind]
-    params = {
-        "pn": 1, "pz": config.EM_PAGE_SIZE, "po": 1, "np": 1,
-        "fltt": 2, "invt": 2, "fid": "f62", "fs": fs,
-        "fields": config.EM_FIELDS, "ut": config.EM_UT,
-        "_": int(time.time() * 1000),
-    }
-    hosts = list(config.EM_HOSTS)
-    random.shuffle(hosts)                # 打乱起点,避免每次都先撞同一个坏节点
-    last_err = None
-    for attempt in range(config.EM_MAX_TRIES):
-        host = hosts[attempt % len(hosts)]
-        url = f"https://{host}/api/qt/clist/get"
-        try:
-            r = requests.get(url, params=params, headers=config.HTTP_HEADERS,
-                             timeout=config.HTTP_TIMEOUT)
-            r.raise_for_status()
-            boards = _parse_eastmoney(r.json())
-            if boards:
-                log.info("东财成功 host=%s 板块数=%d (第%d次)", host, len(boards), attempt + 1)
-                return boards
-            last_err = DataSourceError(f"空结果 (host={host})")
-        except Exception as e:           # 时好时坏:网络/502/JSON 任一失败都不致命,快速换节点
-            last_err = e
-            log.warning("东财抓取失败 host=%s 第%d次: %s", host, attempt + 1, str(e)[:90])
-        time.sleep(0.4)                  # 短停快速换节点(不做指数退避,免得拖太久)
-    raise DataSourceError(f"东财 {config.EM_MAX_TRIES} 次全失败: {last_err}")
-
-
-def _parse_eastmoney(payload: dict) -> dict[str, float]:
-    """解析 clist 返回。f14=名称, f62=主力净流入(元) -> 亿元。"""
+def _parse_eastmoney(payload: dict) -> tuple[dict[str, float], int | None]:
+    """解析 clist 一页。f14=名称, f62=主力净流入(元)->亿元。返回 (boards, total)。"""
     data = (payload or {}).get("data")
     if not data:
-        return {}
+        return {}, None
     diff = data.get("diff")
-    # diff 多为 list;个别版本是 {"0": {...}, ...} 的 dict,这里统一成 list。
     items = list(diff.values()) if isinstance(diff, dict) else list(diff or [])
-    total = data.get("total")
-    if total and total > len(items):     # 被截断会导致"净流出侧"丢失,必须告警
-        log.warning("东财共 %s 个板块,本次只取到 %s 个——pz 不足被截断!", total, len(items))
     out: dict[str, float] = {}
     for it in items:
         name = it.get("f14")
@@ -97,7 +62,49 @@ def _parse_eastmoney(payload: dict) -> dict[str, float]:
             out[str(name)] = float(raw) / 1e8     # 元 -> 亿元
         except (TypeError, ValueError):
             continue
-    return out
+    return out, data.get("total")
+
+
+def _em_page(params: dict) -> tuple[dict[str, float], int | None]:
+    """抓 clist 一页:打乱节点循环重试(东财对境外时好时坏)。返回 (boards, total)。"""
+    hosts = list(config.EM_HOSTS)
+    random.shuffle(hosts)
+    last_err = None
+    for attempt in range(config.EM_MAX_TRIES):
+        host = hosts[attempt % len(hosts)]
+        try:
+            r = requests.get(f"https://{host}/api/qt/clist/get", params=params,
+                             headers=config.HTTP_HEADERS, timeout=config.HTTP_TIMEOUT)
+            r.raise_for_status()
+            boards, total = _parse_eastmoney(r.json())
+            if boards:
+                return boards, total
+            last_err = DataSourceError(f"空结果 (host={host})")
+        except Exception as e:
+            last_err = e
+            log.warning("东财页失败 host=%s 第%d次: %s", host, attempt + 1, str(e)[:80])
+        time.sleep(0.4)
+    raise DataSourceError(f"东财页 {config.EM_MAX_TRIES} 次全失败: {last_err}")
+
+
+def _fetch_eastmoney(kind: str) -> dict[str, float]:
+    """翻页抓全东财概念/行业板块主力净流入。clist 单页上限 100,需逐页累加到 total。"""
+    fs = config.EM_FS[kind]
+    base = {"pz": config.EM_PAGE_SIZE, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+            "fid": "f62", "fs": fs, "fields": config.EM_FIELDS, "ut": config.EM_UT}
+    merged: dict[str, float] = {}
+    total = None
+    for pn in range(1, config.EM_MAX_PAGES + 1):
+        boards, t = _em_page({**base, "pn": pn, "_": int(time.time() * 1000)})
+        if t:
+            total = t
+        merged.update(boards)
+        if not boards or (total and len(merged) >= total):
+            break
+    if not merged:
+        raise DataSourceError("东财翻页后仍无数据")
+    log.info("东财抓全 %d/%s 板块", len(merged), total)
+    return merged
 
 
 # ----------------------------------------------------------------------

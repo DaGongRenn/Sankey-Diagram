@@ -114,12 +114,14 @@ def build_display_set(last_boards: dict[str, float], top_n: int, source: str = "
     - source=='ths'(同花顺,混入大量宽泛大类)且 WHITELIST 非空:只显示白名单匹配到的板块;
     - source=='em'(东财,概念干净)或无白名单:自动取 流入 TopN(右)/ 流出 TopN(左)。
     """
-    if source == "ths" and config.WHITELIST:
+    if config.WHITELIST:
+        # 白名单优先:只在匹配到的白名单板块里,取 流入TopN(右)/ 流出TopN(左),
+        # 真实东财净额;其余(含未显示的白名单板块、非白名单板块、漏损)进「其他」节点中和。
         chosen = _match_whitelist(last_boards, config.WHITELIST)
-        inflow = sorted([n for n in chosen if last_boards.get(n, 0.0) >= 0],
-                        key=lambda n: last_boards[n], reverse=True)
-        outflow = sorted([n for n in chosen if last_boards.get(n, 0.0) < 0],
-                         key=lambda n: last_boards[n])           # 最负在上
+        vals = [(n, last_boards[n]) for n in chosen]
+        inflow = [n for n, v in sorted(vals, key=lambda x: x[1], reverse=True) if v > 0][:top_n]
+        outflow = [n for n, v in sorted(vals, key=lambda x: x[1]) if v < 0][:top_n]
+        log.info("白名单命中%d个:流入显示%d 流出显示%d", len(chosen), len(inflow), len(outflow))
         return inflow, outflow
     by_desc = sorted(last_boards.items(), key=lambda kv: kv[1], reverse=True)
     by_asc = sorted(last_boards.items(), key=lambda kv: kv[1])
@@ -421,7 +423,7 @@ def draw_frame(scene: dict, frame_index: int) -> Image.Image:
                     fill=(*nd["color"], 255), outline=(255, 255, 255, 60), width=1)
         ycen = nd["y0"] + nd["h"] / 2
         if nd["is_bal"]:
-            name = "增量入场" if nd["name"] == BAL_LEFT else "资金离场"
+            name = "其他"                         # 平衡节点:吃掉差值(未显示板块+漏损)使桑基闭合
             val_str = f"{nd['value']:.1f}"
         else:
             name = nd["name"]
