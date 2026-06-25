@@ -1,0 +1,29 @@
+name: A股桑基·连通性自测
+
+# 随时可手动跑:只向东财抓"一次"概念板块主力净流入,验证海外 runner 能否连上国内接口。
+# 绿(成功打印板块) = 可达,GitHub 方案可行;红(报错) = 不可达,建议改本地跑。
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+      - name: 抓一次东财(验证可达性)
+        env:
+          SECTOR_KIND: concept
+        run: |
+          echo "== 概念板块主力净流入,单次抓取 =="
+          python collector.py --session midday --once --force
+          echo "== 全市场涨跌家数 + 成交额 =="
+          python - <<'PY'
+          from datasource import fetch_market_overview
+          print(fetch_market_overview())
+          PY
