@@ -431,8 +431,9 @@ def _draw_overlays(d, scene, p):
         mk = _interp_market(scene["market_kf"], p)
         if mk:
             prev = _interp_market(scene.get("market_prev_kf") or [], p)
-            delta = (mk[2] - prev[2]) if prev else 0.0
-            _draw_market_bar(d, mk[0], mk[1], mk[2], delta, prev is not None)
+            has_delta = bool(prev) and mk[2] > 0 and prev[2] > 0
+            delta = (mk[2] - prev[2]) if has_delta else 0.0
+            _draw_market_bar(d, mk[0], mk[1], mk[2], delta, has_delta)
 
 
 def _interp_market(kf, p):
@@ -466,19 +467,20 @@ def _draw_market_bar(d, up, down, turnover, delta, has_delta):
     split = x0 + (x1 - x0) * dn_i / max(up_i + dn_i, 1)
     d.rounded_rectangle([x0, by, max(x0 + bh, split - 5), by + bh], radius=bh / 2, fill=(*green, 235))
     d.rounded_rectangle([min(x1 - bh, split + 5), by, x1, by + bh], radius=bh / 2, fill=(*red, 235))
-    # 成交额 + 较昨量变(整体居中,字更小)
-    fj = font_cjk(M["font_turn"])
-    y = M["y_turnover"]
-    left = f"成交 {turnover:.0f}亿"
-    if has_delta:
-        tag = "放量" if delta >= 0 else "缩量"
-        dcol = red if delta >= 0 else green
-        dstr = f"{tag} {delta:+.0f}亿"
-        sep = "   ·   较昨 "
-        wl, ws, wd = fj.getlength(left), fj.getlength(sep), fj.getlength(dstr)
-        x = config.W / 2 - (wl + ws + wd) / 2
-        d.text((x, y), left, font=fj, fill=dim, anchor="lm"); x += wl
-        d.text((x, y), sep, font=fj, fill=dim, anchor="lm"); x += ws
-        d.text((x, y), dstr, font=fj, fill=dcol, anchor="lm")
-    else:
-        d.text((config.W / 2, y), left, font=fj, fill=dim, anchor="mm")
+    # 成交额 + 较昨量变(整体居中,字更小);成交额拿不到(=0)就整行省略,只留涨跌家数
+    if turnover > 0:
+        fj = font_cjk(M["font_turn"])
+        y = M["y_turnover"]
+        left = f"成交 {turnover:.0f}亿"
+        if has_delta:
+            tag = "放量" if delta >= 0 else "缩量"
+            dcol = red if delta >= 0 else green
+            dstr = f"{tag} {delta:+.0f}亿"
+            sep = "   ·   较昨 "
+            wl, ws, wd = fj.getlength(left), fj.getlength(sep), fj.getlength(dstr)
+            x = config.W / 2 - (wl + ws + wd) / 2
+            d.text((x, y), left, font=fj, fill=dim, anchor="lm"); x += wl
+            d.text((x, y), sep, font=fj, fill=dim, anchor="lm"); x += ws
+            d.text((x, y), dstr, font=fj, fill=dcol, anchor="lm")
+        else:
+            d.text((config.W / 2, y), left, font=fj, fill=dim, anchor="mm")

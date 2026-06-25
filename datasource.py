@@ -206,7 +206,7 @@ def _fetch_breadth() -> tuple[int, int]:
 
 def _fetch_turnover() -> float:
     """两市总成交额(亿元):新浪指数(海外可达)求和。
-    新浪指数格式: 名称,今开,昨收,最新,最高,最低,成交量(手),成交额(元),…(第7项=成交额)。"""
+    不依赖字段位置——指数行里最大的数就是「成交额(元)」(点位~1e3、成交量~1e8、成交额~1e11)。"""
     url = "https://hq.sinajs.cn/list=" + ",".join(config.MARKET_TURNOVER_SINA)
     headers = {**config.HTTP_HEADERS, "Referer": "https://finance.sina.com.cn/"}
     r = requests.get(url, headers=headers, timeout=config.HTTP_TIMEOUT)
@@ -216,21 +216,29 @@ def _fetch_turnover() -> float:
         parts = line.split('"')
         if len(parts) < 2:
             continue
-        f = parts[1].split(",")
-        if len(f) > 7 and f[7]:
+        nums = []
+        for x in parts[1].split(","):
             try:
-                total += float(f[7])
+                nums.append(float(x))
             except ValueError:
                 pass
+        biggest = max(nums) if nums else 0.0
+        if biggest > 1e9:          # 过滤只有点位/成交量的异常行,>10亿元才算成交额
+            total += biggest
     if total <= 0:
         raise DataSourceError("新浪成交额解析为 0")
     return total / 1e8
 
 
 def fetch_market_overview() -> dict:
-    """全市场:{up, down, turnover(亿)}。任一失败抛 DataSourceError(采集端 best-effort)。"""
+    """全市场:{up, down, turnover(亿)}。涨跌家数必需;成交额可选(拿不到记 0,
+    氛围条只显示涨跌家数,不影响主图)。"""
     up, down = _fetch_breadth()
-    turnover = _fetch_turnover()
+    try:
+        turnover = _fetch_turnover()
+    except Exception as e:
+        log.warning("成交额抓取失败(氛围条省略成交/量变): %s", e)
+        turnover = 0.0
     return {"up": up, "down": down, "turnover": turnover}
 
 
