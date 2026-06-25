@@ -83,7 +83,10 @@ def _parse_eastmoney(payload: dict) -> dict[str, float]:
         return {}
     diff = data.get("diff")
     # diff 多为 list;个别版本是 {"0": {...}, ...} 的 dict,这里统一成 list。
-    items = diff.values() if isinstance(diff, dict) else (diff or [])
+    items = list(diff.values()) if isinstance(diff, dict) else list(diff or [])
+    total = data.get("total")
+    if total and total > len(items):     # 被截断会导致"净流出侧"丢失,必须告警
+        log.warning("东财共 %s 个板块,本次只取到 %s 个——pz 不足被截断!", total, len(items))
     out: dict[str, float] = {}
     for it in items:
         name = it.get("f14")

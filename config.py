@@ -43,7 +43,8 @@ EM_HOSTS = [                          # 多节点轮换:东财对境外时好时
 ]
 EM_MAX_TRIES = 16                     # 单次抓取最多试多少次(打乱节点循环,撞到可用节点即停)
 EM_UT = "b2884a393a59ad64002292a3e90d46a5"   # 公开页面通用 ut 令牌
-EM_PAGE_SIZE = 500                    # 概念板块约 370~400 个,抓全(否则"流出最猛"的板块排在降序末尾会被截断)
+EM_PAGE_SIZE = 2000                   # 必须抓全!东财 t:3 概念板块超 500 个,按净流入降序抓,
+                                      # pz 太小会把"净流出"的板块(排在降序末尾)整段截断→图里没有流出侧。
 
 # akshare 兜底(东财直连全失败时)。对应 stock_sector_fund_flow_rank 的 sector_type。
 AK_SECTOR_TYPE = {
