@@ -1,0 +1,41 @@
+name: A股桑基·收盘静态图
+
+# 手动触发:抓"当前"概念资金流(收盘后=今日收盘值)渲染一张静态 PNG,传成 artifact 下载。
+# 盘后随时可跑;盘中跑则是"截至此刻"的快照。
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '日期 YYYY-MM-DD(留空=今天)。只影响标题,数据始终是"当前"快照。'
+        required: false
+        default: ''
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装中文字体(渲染中文必需)
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 抓收盘数据 + 渲染静态图
+        env:
+          SECTOR_KIND: concept
+        run: python render_snapshot.py "${{ inputs.date }}"
+
+      - name: 上传静态图(在本次运行页面 Artifacts 里下载)
+        uses: actions/upload-artifact@v4
+        with:
+          name: close-snapshot
+          path: out/close_*.png
+          retention-days: 7
+          if-no-files-found: error
