@@ -209,8 +209,19 @@ def compute_layout(values, inflow_names, outflow_names, scale, market_net=None) 
     T = max(left_total + sum(e["mag"] for e in left_ex),
             right_total + sum(e["mag"] for e in right_ex), 1e-6)
 
+    # 残差(其他/增量入场/资金离场)灰节点总高封顶 = 绘图区 1/3:超了只压残差、不动板块,
+    # 标注仍显示真实值。避免主力进/离场客观值过大时把板块挤成一条线。
+    cap = (stack_bot - stack_top) / 3.0
+    extra_ids = set(extra_map)
+
     def stack(names, vals):
         heights = [max(v * scale, config.MIN_BAND_PX) for v in vals]
+        ex_idx = [i for i, nm in enumerate(names) if nm in extra_ids]
+        ex_sum = sum(heights[i] for i in ex_idx)
+        if ex_sum > cap > 0:                      # 残差超 1/3 → 整体压到 1/3
+            f = cap / ex_sum
+            for i in ex_idx:
+                heights[i] = max(heights[i] * f, config.MIN_BAND_PX)
         total = sum(heights) + gap * max(0, len(heights) - 1)
         y = center - total / 2.0
         placed = []
@@ -360,21 +371,19 @@ def prepare_scene(keyframes, session, date_label, source="em",
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
 
     # 固定比例尺:扫描关键帧取「闭合后两侧总额」峰值(含其他/市场残差节点),留 5% 余量
-    max_total = 1e-6
+    # 比例尺按「板块峰值」定(不含残差):残差封顶 1/3,板块用其余 ~2/3,故板块更醒目
+    max_board = 1e-6
     for _, b, _ in keyframes:
         to = sum(abs(float(b.get(n, 0.0))) for n in outflow)
         ti = sum(abs(float(b.get(n, 0.0))) for n in inflow)
-        extras = _make_extras(ti - to, market_net)
-        bt = max(to + sum(e["mag"] for e in extras if e["is_left"]),
-                 ti + sum(e["mag"] for e in extras if not e["is_left"]))
-        max_total = max(max_total, bt)
+        max_board = max(max_board, to, ti)
     stack_h = L["stack_bottom"] - L["stack_top"]
     max_nodes = max(len(inflow), len(outflow)) + 2           # 预留 其他+市场 两个残差槽
     usable = stack_h - L["node_gap"] * max(0, max_nodes - 1)
-    scale = usable / (max_total * 1.05)
+    scale = (usable - stack_h / 3.0) / (max_board * 1.05)    # 给板块留 ~2/3,残差占 ≤1/3
 
-    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s 峰值总额=%.1f亿 scale=%.2f",
-             inflow, outflow, market_net, max_total, scale)
+    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s 板块峰值=%.1f亿 scale=%.2f",
+             inflow, outflow, market_net, max_board, scale)
     return {"keyframes": keyframes, "inflow": inflow, "outflow": outflow,
             "names": inflow + outflow, "session": session, "title": title, "scale": scale,
             "market_net": market_net, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}
