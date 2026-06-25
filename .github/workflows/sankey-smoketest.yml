@@ -16,15 +16,5 @@ jobs:
           python-version: '3.12'
       - name: 安装依赖
         run: pip install -r requirements.txt
-      - name: 实采一次(主图数据=同花顺概念资金流)
-        env:
-          SECTOR_KIND: concept
-        run: python collector.py --session midday --once --force
-
-      - name: 顺带验证氛围条数据(best-effort,失败不影响判定)
-        continue-on-error: true
-        run: |
-          python - <<'PY'
-          from datasource import fetch_market_overview
-          print('全市场总览(涨跌家数+成交额):', fetch_market_overview())
-          PY
+      - name: 多源探测(同花顺/乐咕/新浪 + 东财能否取回主力净流入)
+        run: python probe_sources.py

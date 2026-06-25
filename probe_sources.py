@@ -42,4 +42,13 @@ import akshare as ak
 ak_try("2) 同花顺 概念资金流 即时 (stock_fund_flow_concept)", lambda: ak.stock_fund_flow_concept(symbol="即时"))
 ak_try("3) 同花顺 行业资金流 即时 (stock_fund_flow_industry)", lambda: ak.stock_fund_flow_industry(symbol="即时"))
 ak_try("4) 乐咕 涨跌家数 (stock_market_activity_legu)", lambda: ak.stock_market_activity_legu())
-print("\n探测完毕。把整段输出发我,我据此换数据源。")
+
+print("\n########## 5) 东财板块资金流·多 host(realtime board flow = push2,看是否全封) ##########")
+_ut = "b2884a393a59ad64002292a3e90d46a5"
+_clist = ("/api/qt/clist/get?pn=1&pz=2&po=1&np=1&fltt=2&invt=2&fid=f62"
+          "&fs=m:90+t:3&fields=f12,f14,f62&ut=" + _ut)
+for _h in ["push2.eastmoney.com", "7.push2.eastmoney.com", "48.push2.eastmoney.com",
+           "16.push2.eastmoney.com", "push2delay.eastmoney.com"]:
+    http("EM:" + _h, "https://" + _h + _clist, "https://data.eastmoney.com/")
+
+print("\n探测完毕。把整段输出发我,我据此判断东财能否取回主力净流入口径。")

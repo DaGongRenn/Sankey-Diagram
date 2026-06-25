@@ -91,11 +91,36 @@ def interp_values(keyframes: list[tuple], p: float, names: list[str]) -> dict[st
 # ====================================================================
 # 固定显示集(整段最后一帧决定)
 # ====================================================================
-def build_display_set(last_boards: dict[str, float], top_n: int):
-    """用最后一帧:流入 TopN(右,降序)、流出 TopN(左,|金额|降序)。
+def _match_whitelist(boards: dict[str, float], keywords: list[str]) -> list[str]:
+    """把用户的「概念关键词」映射到当前数据里的实际板块名(子串匹配,精确优先、取最短)。
+    日志会打印每个关键词匹配到了谁、谁没匹配上,便于调整 WHITELIST。"""
+    names = list(boards.keys())
+    chosen, used = [], set()
+    for kw in keywords:
+        cands = [n for n in names if (n == kw or kw in n) and n not in used]
+        if cands:
+            best = min(cands, key=lambda n: (n != kw, len(n)))   # 精确优先,再取最短
+            chosen.append(best)
+            used.add(best)
+            log.info("白名单 %s → %s", kw, best)
+        else:
+            log.warning("白名单未匹配(忽略): %s", kw)
+    return chosen
 
-    返回 (inflow_names, outflow_names),均为「从上到下」的固定顺序。
+
+def build_display_set(last_boards: dict[str, float], top_n: int):
+    """确定全程固定显示集与顺序,返回 (inflow_names, outflow_names),从上到下固定。
+
+    - WHITELIST 非空:只显示白名单匹配到的板块,按当前资金流「方向」分左右、|金额|排序;
+    - WHITELIST 为空:自动取 流入 TopN(右)/ 流出 TopN(左)。
     """
+    if config.WHITELIST:
+        chosen = _match_whitelist(last_boards, config.WHITELIST)
+        inflow = sorted([n for n in chosen if last_boards.get(n, 0.0) >= 0],
+                        key=lambda n: last_boards[n], reverse=True)
+        outflow = sorted([n for n in chosen if last_boards.get(n, 0.0) < 0],
+                         key=lambda n: last_boards[n])           # 最负在上
+        return inflow, outflow
     by_desc = sorted(last_boards.items(), key=lambda kv: kv[1], reverse=True)
     by_asc = sorted(last_boards.items(), key=lambda kv: kv[1])
     inflow = [n for n, v in by_desc if v > 0][:top_n]            # 最大流入在上
