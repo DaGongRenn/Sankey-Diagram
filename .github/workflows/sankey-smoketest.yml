@@ -16,14 +16,5 @@ jobs:
           python-version: '3.12'
       - name: 安装依赖
         run: pip install -r requirements.txt
-      - name: 抓一次东财(验证可达性)
-        env:
-          SECTOR_KIND: concept
-        run: |
-          echo "== 概念板块主力净流入,单次抓取 =="
-          python collector.py --session midday --once --force
-          echo "== 全市场涨跌家数 + 成交额 =="
-          python - <<'PY'
-          from datasource import fetch_market_overview
-          print(fetch_market_overview())
-          PY
+      - name: 多源可达性探测
+        run: python probe_sources.py
