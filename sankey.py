@@ -371,19 +371,33 @@ def prepare_scene(keyframes, session, date_label, source="em",
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
 
     # 固定比例尺:扫描关键帧取「闭合后两侧总额」峰值(含其他/市场残差节点),留 5% 余量
-    # 比例尺按「板块峰值」定(不含残差):残差封顶 1/3,板块用其余 ~2/3,故板块更醒目
-    max_board = 1e-6
-    for _, b, _ in keyframes:
-        to = sum(abs(float(b.get(n, 0.0))) for n in outflow)
-        ti = sum(abs(float(b.get(n, 0.0))) for n in inflow)
-        max_board = max(max_board, to, ti)
+    # 比例尺:让「峰值帧」填满可用高度(桑基占长边 ~60%+),同时残差仍封顶 1/3。
+    # 对每帧每侧反解"使该侧高度=target"的 scale,取全程最小(峰值帧填满,其余更小=盘中渐长)。
     stack_h = L["stack_bottom"] - L["stack_top"]
     max_nodes = max(len(inflow), len(outflow)) + 2           # 预留 其他+市场 两个残差槽
     usable = stack_h - L["node_gap"] * max(0, max_nodes - 1)
-    scale = (usable - stack_h / 3.0) / (max_board * 1.05)    # 给板块留 ~2/3,残差占 ≤1/3
+    cap_px = stack_h / 3.0                                    # 残差封顶(与 compute_layout 一致)
+    target = usable                                          # 峰值帧填满可用高 → 桑基占长边 ~63%
 
-    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s 板块峰值=%.1f亿 scale=%.2f",
-             inflow, outflow, market_net, max_board, scale)
+    def _side_scale(board, ex):
+        if board <= 1e-9:
+            return target / ex if ex > 1e-9 else float("inf")
+        s1 = target / (board + ex)                           # 残差不封顶:板块+残差一起填满
+        return s1 if ex * s1 <= cap_px else (target - cap_px) / board   # 封顶则板块填其余 ~2/3
+
+    scale = float("inf")
+    for _, b, _ in keyframes:
+        to = sum(abs(float(b.get(n, 0.0))) for n in outflow)
+        ti = sum(abs(float(b.get(n, 0.0))) for n in inflow)
+        extras = _make_extras(ti - to, market_net)
+        le = sum(e["mag"] for e in extras if e["is_left"])
+        re = sum(e["mag"] for e in extras if not e["is_left"])
+        scale = min(scale, _side_scale(to, le), _side_scale(ti, re))
+    if not (0 < scale < float("inf")):
+        scale = 1.0
+
+    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s scale=%.3f",
+             inflow, outflow, market_net, scale)
     return {"keyframes": keyframes, "inflow": inflow, "outflow": outflow,
             "names": inflow + outflow, "session": session, "title": title, "scale": scale,
             "market_net": market_net, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}
