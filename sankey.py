@@ -201,67 +201,47 @@ def compute_layout(values, inflow_names, outflow_names, scale, market_net=None) 
     left_ex = [e for e in extras if e["is_left"]]
     right_ex = [e for e in extras if not e["is_left"]]
 
-    left_nodes = list(outflow_names) + [e["id"] for e in left_ex]
-    left_node_vals = left_vals + [e["mag"] for e in left_ex]
-    right_nodes = list(inflow_names) + [e["id"] for e in right_ex]
-    right_node_vals = right_vals + [e["mag"] for e in right_ex]
-
+    H_avail = stack_bot - stack_top
     T = max(left_total + sum(e["mag"] for e in left_ex),
-            right_total + sum(e["mag"] for e in right_ex), 1e-6)
-
-    # 残差(其他/增量入场/资金离场)灰节点总高封顶 = 绘图区 1/3:超了只压残差、不动板块,
-    # 标注仍显示真实值。避免主力进/离场客观值过大时把板块挤成一条线。
-    cap = (stack_bot - stack_top) / 3.0
-    extra_ids = set(extra_map)
-
-    def stack(names, vals):
-        heights = [max(v * scale, config.MIN_BAND_PX) for v in vals]
-        ex_idx = [i for i, nm in enumerate(names) if nm in extra_ids]
-        ex_sum = sum(heights[i] for i in ex_idx)
-        if ex_sum > cap > 0:                      # 残差超 1/3 → 整体压到 1/3
-            f = cap / ex_sum
-            for i in ex_idx:
-                heights[i] = max(heights[i] * f, config.MIN_BAND_PX)
-        total = sum(heights) + gap * max(0, len(heights) - 1)
-        y = center - total / 2.0
-        placed = []
-        for nm, h in zip(names, heights):
-            placed.append({"name": nm, "y0": y, "h": h})
-            y += h + gap
-        return placed, sum(heights)
-
-    left_stack, left_h = stack(left_nodes, left_node_vals)
-    right_stack, right_h = stack(right_nodes, right_node_vals)
-
-    hub_h = max(left_h, right_h)
+            right_total + sum(e["mag"] for e in right_ex), 1e-6)     # 真实总额(hub 标注用)
     hub_x0 = L["hub_x"] - L["hub_w"] / 2.0
     hub_x1 = L["hub_x"] + L["hub_w"] / 2.0
-    left_hub_y = center - left_h / 2.0
-    right_hub_y = center - right_h / 2.0
 
-    def build_side(stack_list, x_center, is_left, hub_y_start):
-        nodes, ribbons = [], []
-        hy = hub_y_start
+    def build_side(board_names, board_vals, exs, x_center, is_left):
+        # 板块高度 ∝ 值×scale;残差(其他/增量入场/资金离场)作为「填充」,把本侧补满到
+        # H_avail(扣间隙)→ 左右严格对齐 + 占满画面;残差标注仍显真实值(只是绘制高度=填充量)。
+        n = len(board_vals) + len(exs)
+        gaps = gap * max(0, n - 1)
+        bh = [max(v * scale, config.MIN_BAND_PX) for v in board_vals]
+        room = max(0.0, (H_avail - gaps) - sum(bh))                # 留给残差的总高
+        mag_sum = sum(e["mag"] for e in exs) or 1.0
+        eh = [max(room * e["mag"] / mag_sum, config.MIN_BAND_PX) for e in exs]
+        names = list(board_names) + [e["id"] for e in exs]
+        heights = bh + eh
+        sum_h = sum(heights)
         node_inner = (x_center + L["node_w"] / 2.0) if is_left else (x_center - L["node_w"] / 2.0)
         hub_edge = hub_x0 if is_left else hub_x1
-        for nd in stack_list:
-            nm, y0, h = nd["name"], nd["y0"], nd["h"]
+        y = center - (sum_h + gaps) / 2.0          # 节点带间隙、整体居中
+        hy = center - sum_h / 2.0                  # 缎带在 hub 侧无间隙紧贴、居中
+        nodes, ribbons = [], []
+        for nm, h in zip(names, heights):
             ex = extra_map.get(nm)
-            if ex:                                # 残差节点:其他 / 增量入场 / 资金离场
+            if ex:                                 # 残差节点:其他 / 增量入场 / 资金离场
                 col, disp, label, is_extra = ex["color"], ex["disp"], ex["label"], True
-            else:                                 # 普通板块:左恒绿/右恒红,同侧不混色
+            else:                                  # 普通板块:左恒绿/右恒红,同侧不混色
                 col = C["outflow"] if is_left else C["inflow"]
                 disp, label, is_extra = values[nm], nm, False
-            nodes.append({"name": nm, "label": label, "x": x_center, "y0": y0, "h": h,
+            nodes.append({"name": nm, "label": label, "x": x_center, "y0": y, "h": h,
                           "color": col, "value": disp, "is_left": is_left, "is_extra": is_extra})
-            ribbons.append({"is_left": is_left, "color": col,
-                            "x_node": node_inner, "y_node": y0, "h_node": h,
-                            "x_hub": hub_edge, "y_hub": hy, "h_hub": h})
+            ribbons.append({"is_left": is_left, "color": col, "x_node": node_inner, "y_node": y,
+                            "h_node": h, "x_hub": hub_edge, "y_hub": hy, "h_hub": h})
+            y += h + gap
             hy += h
-        return nodes, ribbons
+        return nodes, ribbons, sum_h
 
-    ln, lr = build_side(left_stack, L["left_x"], True, left_hub_y)
-    rn, rr = build_side(right_stack, L["right_x"], False, right_hub_y)
+    ln, lr, lh = build_side(outflow_names, left_vals, left_ex, L["left_x"], True)
+    rn, rr, rh = build_side(inflow_names, right_vals, right_ex, L["right_x"], False)
+    hub_h = max(lh, rh)
 
     return {
         "nodes": ln + rn, "ribbons": lr + rr,
@@ -371,33 +351,19 @@ def prepare_scene(keyframes, session, date_label, source="em",
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
 
     # 固定比例尺:扫描关键帧取「闭合后两侧总额」峰值(含其他/市场残差节点),留 5% 余量
-    # 比例尺:让「峰值帧」填满可用高度(桑基占长边 ~60%+),同时残差仍封顶 1/3。
-    # 对每帧每侧反解"使该侧高度=target"的 scale,取全程最小(峰值帧填满,其余更小=盘中渐长)。
-    stack_h = L["stack_bottom"] - L["stack_top"]
-    max_nodes = max(len(inflow), len(outflow)) + 2           # 预留 其他+市场 两个残差槽
-    usable = stack_h - L["node_gap"] * max(0, max_nodes - 1)
-    cap_px = stack_h / 3.0                                    # 残差封顶(与 compute_layout 一致)
-    target = usable                                          # 峰值帧填满可用高 → 桑基占长边 ~63%
-
-    def _side_scale(board, ex):
-        if board <= 1e-9:
-            return target / ex if ex > 1e-9 else float("inf")
-        s1 = target / (board + ex)                           # 残差不封顶:板块+残差一起填满
-        return s1 if ex * s1 <= cap_px else (target - cap_px) / board   # 封顶则板块填其余 ~2/3
-
-    scale = float("inf")
+    # 比例尺:峰值帧「较大板块侧」占可用高 ~2/3,残差当填充补满其余 ~1/3 → 板块醒目、两侧对齐占满
+    max_board = 1e-6
     for _, b, _ in keyframes:
         to = sum(abs(float(b.get(n, 0.0))) for n in outflow)
         ti = sum(abs(float(b.get(n, 0.0))) for n in inflow)
-        extras = _make_extras(ti - to, market_net)
-        le = sum(e["mag"] for e in extras if e["is_left"])
-        re = sum(e["mag"] for e in extras if not e["is_left"])
-        scale = min(scale, _side_scale(to, le), _side_scale(ti, re))
-    if not (0 < scale < float("inf")):
-        scale = 1.0
+        max_board = max(max_board, to, ti)
+    stack_h = L["stack_bottom"] - L["stack_top"]
+    max_nodes = max(len(inflow), len(outflow)) + 2
+    usable = stack_h - L["node_gap"] * max(0, max_nodes - 1)
+    scale = (2.0 / 3.0) * usable / max_board                 # 板块峰值占 ~2/3,残差填满其余
 
-    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s scale=%.3f",
-             inflow, outflow, market_net, scale)
+    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s 板块峰值=%.1f亿 scale=%.3f",
+             inflow, outflow, market_net, max_board, scale)
     return {"keyframes": keyframes, "inflow": inflow, "outflow": outflow,
             "names": inflow + outflow, "session": session, "title": title, "scale": scale,
             "market_net": market_net, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}

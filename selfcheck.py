@@ -104,7 +104,7 @@ def render_session(session: str) -> bool:
     mkf = snapshots.build_market_keyframes(snapshots.load_market(SYN_DATE), session)
     pmkf = snapshots.build_market_keyframes(snapshots.find_prev_market(SYN_DATE), session)
     source = snapshots.last_source(SYN_DATE, SYN_KIND)
-    scene = sankey.prepare_scene(kf, session, date_label(SYN_DATE), source, mkf, pmkf)
+    scene = sankey.prepare_scene(kf, session, date_label(SYN_DATE), source, mkf, pmkf, market_net=-250.0)
     out = config.OUT_DIR / f"selfcheck_{session}.mp4"
     frames_to_mp4(scene, out)
 
