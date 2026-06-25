@@ -24,6 +24,9 @@ OUT_DIR.mkdir(exist_ok=True)
 # concept=概念板块(默认,贴合半导体/CPO/算力/PCB/存储芯片/人形机器人/商业航天等),
 # industry=行业板块(备选)。
 SECTOR_KIND = os.environ.get("SECTOR_KIND", "concept")   # "concept" | "industry"
+# 数据源优先级:ths=同花顺(海外可达,默认) / em=东财(主力净流入口径,仅国内可达)。
+# 东财封境外 IP,GitHub 上必须用 ths;本地想要东财"主力净流入"口径可设 em。
+PREFER_SOURCE = os.environ.get("PREFER_SOURCE", "ths")
 
 # 东方财富 push2 clist 接口。fs 决定板块类型;fid=f62 按「主力净流入」排序;
 # f62 = 当日主力净流入额(单位:元),代码里 /1e8 转「亿元」。
@@ -80,8 +83,9 @@ SKIP_NON_TRADING = True     # True=周末/节假日(akshare 日历)自动跳过,
 # ----- 顶部「全市场氛围条」(涨跌家数 + 成交额 + 较昨量变),变化慢、采得稀 -----
 SHOW_MARKET_BAR = True
 MARKET_EVERY = 3            # 每 N 次资金流轮询才采一次全市场指标(≈6 分钟/点,降负载)
-# 东财指数 secid:上证综指 / 深证综指 / 北证50;成交额(f6,元)求和≈两市总成交
-MARKET_TURNOVER_SECIDS = ["1.000001", "0.399106", "0.899050"]
+# 成交额数据源:新浪指数(海外可达)。上证综指 / 深证综指 / 北证50,成交额(元)求和≈两市总成交
+MARKET_TURNOVER_SINA = ["sh000001", "sz399106", "bj899050"]
+MARKET_TURNOVER_SECIDS = ["1.000001", "0.399106", "0.899050"]   # 东财备用(仅国内可达)
 
 # ======================================================================
 # 3. 视频输出参数(抖音竖屏 9:16)

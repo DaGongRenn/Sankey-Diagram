@@ -1,18 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-datasource.py —— 板块「主力净流入」快照数据源(单位:亿元)。
+datasource.py —— 板块资金流快照数据源(单位:亿元)。
 
-优先:东方财富 push2 clist 接口(多 host 轮换 + 重试 + 头部伪装)。
-兜底:akshare stock_sector_fund_flow_rank(东财直连全失败时)。
+优先:同花顺概念/行业资金流「净额」(akshare,海外 runner 可达,默认)。
+备用:东方财富 push2「主力净流入」(口径更准,但封境外 IP,仅国内可达)。
+兜底:akshare 东财 stock_sector_fund_flow_rank。
+顺序由 config.PREFER_SOURCE 决定(ths/em)。
 
 对外只暴露一个函数:
     fetch_snapshot(kind="concept") -> dict[str, float]
-返回 {板块名: 当日累计主力净流入(亿元)};失败抛 DataSourceError。
+返回 {板块名: 当日累计资金净流入(亿元)};失败抛 DataSourceError。
 
-注意:主力净流入是「当日累计」值——每次拿到的是截至此刻的累计净额,
+注意:净流入是「当日累计」值——每次拿到的是截至此刻的累计净额,
 把不同时刻的快照按时间拼起来,就是盘中演变曲线。
 """
 from __future__ import annotations
+import os
+os.environ.setdefault("TQDM_DISABLE", "1")   # 静音 akshare 内部 tqdm 进度条,清爽日志
 import logging
 import time
 import requests
@@ -116,16 +120,61 @@ def _fetch_akshare(kind: str) -> dict[str, float]:
 
 
 # ----------------------------------------------------------------------
+# 主数据源:同花顺(海外可达)
+# ----------------------------------------------------------------------
+def _fetch_ths(kind: str) -> dict[str, float]:
+    """同花顺 概念/行业 资金流(即时)→ {名称: 净额(亿)}。
+    净额 = 流入资金 − 流出资金,单位已是「亿元」(无需换算)。"""
+    try:
+        import akshare as ak
+    except Exception as e:
+        raise DataSourceError(f"akshare 未安装: {e}")
+    fn = ak.stock_fund_flow_concept if kind == "concept" else ak.stock_fund_flow_industry
+    df = fn(symbol="即时")
+    if df is None or df.empty:
+        raise DataSourceError("同花顺返回空")
+    cols = list(df.columns)
+    # 同花顺把概念/行业名放在「行业」列;净额列名含「净额」
+    name_col = next((c for c in cols if any(k in str(c) for k in ("名称", "行业", "概念"))), None)
+    net_col = next((c for c in cols if "净额" in str(c)), None)
+    if name_col is None or net_col is None:
+        raise DataSourceError(f"同花顺列名不识别: {cols}")
+    out: dict[str, float] = {}
+    for _, r in df.iterrows():
+        try:
+            out[str(r[name_col])] = float(r[net_col])   # 已是亿元
+        except (TypeError, ValueError):
+            continue
+    if not out:
+        raise DataSourceError("同花顺解析后为空")
+    return out
+
+
+# ----------------------------------------------------------------------
 # 对外入口
 # ----------------------------------------------------------------------
 def fetch_snapshot(kind: str | None = None) -> dict[str, float]:
-    """抓一次快照。先东财直连,失败再 akshare;都失败抛 DataSourceError。"""
+    """抓一次板块资金流快照 {名称: 净流入(亿)}。按 PREFER_SOURCE 决定优先级,
+    逐个尝试 同花顺→东财直连→akshare东财,全失败抛 DataSourceError。"""
     kind = kind or config.SECTOR_KIND
-    try:
-        return _fetch_eastmoney(kind)
-    except DataSourceError as e:
-        log.warning("东财直连失败,转 akshare 兜底: %s", e)
-        return _fetch_akshare(kind)
+    sources = [
+        ("同花顺", lambda: _fetch_ths(kind)),
+        ("东财直连", lambda: _fetch_eastmoney(kind)),
+        ("akshare东财", lambda: _fetch_akshare(kind)),
+    ]
+    if config.PREFER_SOURCE == "em":          # 国内想要东财"主力净流入"口径
+        sources = sources[1:] + sources[:1]
+    errs = []
+    for name, fn in sources:
+        try:
+            data = fn()
+            if data:
+                log.info("数据源=%s 板块=%d", name, len(data))
+                return data
+        except Exception as e:
+            log.warning("数据源[%s]失败: %s", name, e)
+            errs.append(f"{name}: {e}")
+    raise DataSourceError("所有数据源均失败 -> " + " | ".join(errs))
 
 
 # ----------------------------------------------------------------------
@@ -156,32 +205,26 @@ def _fetch_breadth() -> tuple[int, int]:
 
 
 def _fetch_turnover() -> float:
-    """两市总成交额(亿元):东财 ulist 取上证/深证/北证指数 f6(元)求和。"""
-    secids = ",".join(config.MARKET_TURNOVER_SECIDS)
-    last_err = None
-    for attempt in range(config.HTTP_RETRIES):
-        host = config.EM_HOSTS[attempt % len(config.EM_HOSTS)]
-        url = f"https://{host}/api/qt/ulist.np/get"
-        params = {"secids": secids, "fields": "f6", "fltt": 2, "invt": 2,
-                  "ut": config.EM_UT, "_": int(time.time() * 1000)}
-        try:
-            r = requests.get(url, params=params, headers=config.HTTP_HEADERS,
-                             timeout=config.HTTP_TIMEOUT)
-            r.raise_for_status()
-            diff = (r.json().get("data") or {}).get("diff") or []
-            items = diff.values() if isinstance(diff, dict) else diff
-            total = 0.0
-            for it in items:
-                v = it.get("f6")
-                if v not in (None, "-", ""):
-                    total += float(v)
-            if total > 0:
-                return total / 1e8
-            last_err = DataSourceError("成交额为 0")
-        except Exception as e:
-            last_err = e
-        time.sleep(config.HTTP_BACKOFF ** attempt)
-    raise DataSourceError(f"成交额抓取失败: {last_err}")
+    """两市总成交额(亿元):新浪指数(海外可达)求和。
+    新浪指数格式: 名称,今开,昨收,最新,最高,最低,成交量(手),成交额(元),…(第7项=成交额)。"""
+    url = "https://hq.sinajs.cn/list=" + ",".join(config.MARKET_TURNOVER_SINA)
+    headers = {**config.HTTP_HEADERS, "Referer": "https://finance.sina.com.cn/"}
+    r = requests.get(url, headers=headers, timeout=config.HTTP_TIMEOUT)
+    r.raise_for_status()
+    total = 0.0
+    for line in r.text.strip().splitlines():
+        parts = line.split('"')
+        if len(parts) < 2:
+            continue
+        f = parts[1].split(",")
+        if len(f) > 7 and f[7]:
+            try:
+                total += float(f[7])
+            except ValueError:
+                pass
+    if total <= 0:
+        raise DataSourceError("新浪成交额解析为 0")
+    return total / 1e8
 
 
 def fetch_market_overview() -> dict:

@@ -16,5 +16,9 @@ jobs:
           python-version: '3.12'
       - name: 安装依赖
         run: pip install -r requirements.txt
-      - name: 多源可达性探测
-        run: python probe_sources.py
+      - name: 实采一次(同花顺概念资金流 + 全市场氛围条)
+        env:
+          SECTOR_KIND: concept
+        run: |
+          python collector.py --session midday --once --force
+          python -c "from datasource import fetch_market_overview; print('全市场总览:', fetch_market_overview())"
