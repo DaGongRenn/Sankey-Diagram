@@ -123,6 +123,9 @@ def build_display_set(last_boards: dict[str, float], top_n: int, source: str = "
         return inflow, outflow
     by_desc = sorted(last_boards.items(), key=lambda kv: kv[1], reverse=True)
     by_asc = sorted(last_boards.items(), key=lambda kv: kv[1])
+    n_pos = sum(1 for v in last_boards.values() if v > 0)
+    n_neg = sum(1 for v in last_boards.values() if v < 0)
+    log.info("自动Top-N(%s)候选:净流入板块=%d 净流出板块=%d (取各%d)", source, n_pos, n_neg, top_n)
     inflow = [n for n, v in by_desc if v > 0][:top_n]            # 最大流入在上
     outflow = [n for n, v in by_asc if v < 0][:top_n]            # 最大流出在上
     return inflow, outflow

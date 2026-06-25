@@ -31,6 +31,17 @@ class DataSourceError(Exception):
     pass
 
 
+def _filter_boards(data: dict[str, float]) -> dict[str, float]:
+    """剔除黑名单里的「非概念/产业」板块(风格/宽基指数/资金属性/风险警示等)。
+    东财 t:3、同花顺概念列表里都混了这类伪板块,统一在此过滤。"""
+    bl = config.BLOCKLIST_KEYWORDS
+    out = {n: v for n, v in (data or {}).items() if not any(k in n for k in bl)}
+    removed = len(data or {}) - len(out)
+    if removed:
+        log.info("黑名单过滤掉 %d 个非概念板块,剩 %d", removed, len(out))
+    return out
+
+
 # ----------------------------------------------------------------------
 # 主数据源:东方财富 clist
 # ----------------------------------------------------------------------
@@ -169,7 +180,7 @@ def fetch_snapshot(kind: str | None = None) -> tuple[dict[str, float], str]:
     for src, methods in plan:
         for name, fn in methods:
             try:
-                data = fn()
+                data = _filter_boards(fn())
                 if data:
                     log.info("数据源=%s(%s) 板块=%d", name, src, len(data))
                     return data, src
