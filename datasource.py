@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 os.environ.setdefault("TQDM_DISABLE", "1")   # 静音 akshare 内部 tqdm 进度条,清爽日志
 import logging
+import random
 import time
 import requests
 
@@ -42,25 +43,26 @@ def _fetch_eastmoney(kind: str) -> dict[str, float]:
         "fields": config.EM_FIELDS, "ut": config.EM_UT,
         "_": int(time.time() * 1000),
     }
+    hosts = list(config.EM_HOSTS)
+    random.shuffle(hosts)                # 打乱起点,避免每次都先撞同一个坏节点
     last_err = None
-    for attempt in range(config.HTTP_RETRIES):
-        host = config.EM_HOSTS[attempt % len(config.EM_HOSTS)]
+    for attempt in range(config.EM_MAX_TRIES):
+        host = hosts[attempt % len(hosts)]
         url = f"https://{host}/api/qt/clist/get"
         try:
             r = requests.get(url, params=params, headers=config.HTTP_HEADERS,
                              timeout=config.HTTP_TIMEOUT)
             r.raise_for_status()
-            payload = r.json()
-            boards = _parse_eastmoney(payload)
+            boards = _parse_eastmoney(r.json())
             if boards:
-                log.info("东财直连成功 host=%s 板块数=%d", host, len(boards))
+                log.info("东财成功 host=%s 板块数=%d (第%d次)", host, len(boards), attempt + 1)
                 return boards
             last_err = DataSourceError(f"空结果 (host={host})")
-        except Exception as e:           # 网络/JSON/字段任一失败都不致命,换 host 重试
+        except Exception as e:           # 时好时坏:网络/502/JSON 任一失败都不致命,快速换节点
             last_err = e
-            log.warning("东财抓取失败 host=%s 第%d次: %s", host, attempt + 1, e)
-        time.sleep(config.HTTP_BACKOFF ** attempt)
-    raise DataSourceError(f"东财全部重试失败: {last_err}")
+            log.warning("东财抓取失败 host=%s 第%d次: %s", host, attempt + 1, str(e)[:90])
+        time.sleep(0.4)                  # 短停快速换节点(不做指数退避,免得拖太久)
+    raise DataSourceError(f"东财 {config.EM_MAX_TRIES} 次全失败: {last_err}")
 
 
 def _parse_eastmoney(payload: dict) -> dict[str, float]:
@@ -154,27 +156,26 @@ def _fetch_ths(kind: str) -> dict[str, float]:
 # 对外入口
 # ----------------------------------------------------------------------
 def fetch_snapshot(kind: str | None = None) -> dict[str, float]:
-    """抓一次板块资金流快照 {名称: 净流入(亿)}。按 PREFER_SOURCE 决定优先级,
-    逐个尝试 同花顺→东财直连→akshare东财,全失败抛 DataSourceError。"""
+    """抓一次板块资金流快照 {名称: 净流入(亿)}。
+    PREFER_SOURCE=em → 只在东财系内重试(主力净流入口径:东财直连→akshare东财兜底);
+    PREFER_SOURCE=ths → 只用同花顺(净额口径)。两口径不混用,避免时间序列跳变。"""
     kind = kind or config.SECTOR_KIND
-    sources = [
-        ("同花顺", lambda: _fetch_ths(kind)),
-        ("东财直连", lambda: _fetch_eastmoney(kind)),
-        ("akshare东财", lambda: _fetch_akshare(kind)),
-    ]
-    if config.PREFER_SOURCE == "em":          # 国内想要东财"主力净流入"口径
-        sources = sources[1:] + sources[:1]
+    if config.PREFER_SOURCE == "ths":
+        methods = [("同花顺", lambda: _fetch_ths(kind))]
+    else:
+        methods = [("东财直连", lambda: _fetch_eastmoney(kind)),
+                   ("akshare东财", lambda: _fetch_akshare(kind))]
     errs = []
-    for name, fn in sources:
+    for name, fn in methods:
         try:
             data = fn()
             if data:
                 log.info("数据源=%s 板块=%d", name, len(data))
                 return data
         except Exception as e:
-            log.warning("数据源[%s]失败: %s", name, e)
-            errs.append(f"{name}: {e}")
-    raise DataSourceError("所有数据源均失败 -> " + " | ".join(errs))
+            log.warning("数据源[%s]失败: %s", name, str(e)[:120])
+            errs.append(f"{name}: {str(e)[:80]}")
+    raise DataSourceError(f"[{config.PREFER_SOURCE}] 数据源全失败 -> " + " | ".join(errs))
 
 
 # ----------------------------------------------------------------------

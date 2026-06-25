@@ -24,9 +24,10 @@ OUT_DIR.mkdir(exist_ok=True)
 # concept=概念板块(默认,贴合半导体/CPO/算力/PCB/存储芯片/人形机器人/商业航天等),
 # industry=行业板块(备选)。
 SECTOR_KIND = os.environ.get("SECTOR_KIND", "concept")   # "concept" | "industry"
-# 数据源优先级:ths=同花顺(海外可达,默认) / em=东财(主力净流入口径,仅国内可达)。
-# 东财封境外 IP,GitHub 上必须用 ths;本地想要东财"主力净流入"口径可设 em。
-PREFER_SOURCE = os.environ.get("PREFER_SOURCE", "ths")
+# 数据源:em=东财「主力净流入」(口径准,默认) / ths=同花顺「净额」(口径略糙但更稳)。
+# 东财对境外 IP「时好时坏」——部分 push2 节点随时可用,靠多节点重试拿到;采集器丢几次由插值补。
+# 两口径不混用(避免曲线跳变):选 em 就只在东财系内重试,选 ths 就只用同花顺。
+PREFER_SOURCE = os.environ.get("PREFER_SOURCE", "em")
 
 # 东方财富 push2 clist 接口。fs 决定板块类型;fid=f62 按「主力净流入」排序;
 # f62 = 当日主力净流入额(单位:元),代码里 /1e8 转「亿元」。
@@ -35,12 +36,12 @@ EM_FS = {
     "industry": "m:90+t:2",   # 行业板块
 }
 EM_FIELDS = "f12,f14,f62,f184,f3"     # 代码,名称,主力净流入额(元),主力净占比,涨跌幅
-EM_HOSTS = [                          # 多 host 轮换:海外/被限流时自动换一个
-    "push2.eastmoney.com",
-    "1.push2.eastmoney.com",
-    "17.push2.eastmoney.com",
-    "29.push2.eastmoney.com",
+EM_HOSTS = [                          # 多节点轮换:东财对境外时好时坏,试到通的那个为止
+    "push2.eastmoney.com", "7.push2.eastmoney.com", "push2delay.eastmoney.com",
+    "1.push2.eastmoney.com", "12.push2.eastmoney.com", "17.push2.eastmoney.com",
+    "29.push2.eastmoney.com", "82.push2.eastmoney.com",
 ]
+EM_MAX_TRIES = 16                     # 单次抓取最多试多少次(打乱节点循环,撞到可用节点即停)
 EM_UT = "b2884a393a59ad64002292a3e90d46a5"   # 公开页面通用 ut 令牌
 EM_PAGE_SIZE = 500                    # 概念板块约 370~400 个,抓全(否则"流出最猛"的板块排在降序末尾会被截断)
 
