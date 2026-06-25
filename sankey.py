@@ -161,10 +161,13 @@ def _make_extras(displayed_net: float, market_net):
     """算出残差节点列表。每个 {id, mag(>0), disp(带符号), label, color, is_left}。"""
     extras = []
     if market_net is None:
-        # 兼容旧路径:单「其他」= 让左右闭合的差额
-        if abs(displayed_net) > 1e-9:
-            extras.append({"id": OTHER_ID, "mag": abs(displayed_net), "disp": displayed_net,
-                           "label": "其他", "color": C["other"], "is_left": displayed_net < 0})
+        # 退化(没拿到全市场主力净流入):单节点=增量入场/资金离场=流入−流出差额,放让两侧相等那一侧
+        if displayed_net > 1e-9:          # 流入>流出 → 左侧补「增量入场」
+            extras.append({"id": MARKET_ID, "mag": displayed_net, "disp": displayed_net,
+                           "label": "增量入场", "color": C["balance_in"], "is_left": True})
+        elif displayed_net < -1e-9:       # 流出>流入 → 右侧补「资金离场」
+            extras.append({"id": MARKET_ID, "mag": -displayed_net, "disp": displayed_net,
+                           "label": "资金离场", "color": C["balance_out"], "is_left": False})
         return extras
     # 双节点·严格闭合
     other = market_net - displayed_net            # 其他 = 全市场主力净流入 − 前十净额
