@@ -29,8 +29,15 @@ try:
 except Exception as e:
     print("氛围条失败(忽略,不影响主图):", e)
 
+market_net = None
+try:
+    market_net = datasource.fetch_market_main_net()
+    print("全市场主力净流入:", round(market_net, 1), "亿")
+except Exception as e:
+    print("全市场主力净流入抓取失败(其他节点退化为闭合差额):", e)
+
 kf = [(1.0, boards, "15:00")]                          # 单关键帧=收盘态
-scene = sankey.prepare_scene(kf, "close", date_label(date_str), src, mkf, [])
+scene = sankey.prepare_scene(kf, "close", date_label(date_str), src, mkf, [], market_net=market_net)
 out = config.OUT_DIR / f"close_{date_str}.png"
 sankey.draw_frame(scene, config.TOTAL_FRAMES - 1).save(out)
 print("已生成静态图:", out)

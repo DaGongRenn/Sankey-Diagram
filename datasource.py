@@ -265,6 +265,25 @@ def fetch_market_overview() -> dict:
     return {"up": up, "down": down, "turnover": turnover}
 
 
+def fetch_market_main_net() -> float:
+    """全市场(沪深)主力净流入(亿元):东财大盘资金流最新一行。best-effort,失败抛错。
+    用于桑基图「其他」节点 = 全市场主力净流入 − 前十净额。"""
+    try:
+        import akshare as ak
+    except Exception as e:
+        raise DataSourceError(f"akshare 未安装: {e}")
+    df = ak.stock_market_fund_flow()
+    if df is None or df.empty:
+        raise DataSourceError("大盘资金流为空")
+    col = next((c for c in df.columns if "主力净流入" in str(c) and "净额" in str(c)), None)
+    if col is None:
+        raise DataSourceError(f"大盘资金流列名不识别: {list(df.columns)}")
+    raw = float(df.iloc[-1][col])
+    val = raw / 1e8 if abs(raw) > 1e5 else raw       # 元→亿(量级 ~1e10 元;已是亿则不除)
+    log.info("全市场主力净流入 raw=%s → %.1f亿", raw, val)
+    return val
+
+
 if __name__ == "__main__":
     # 手动单测:python datasource.py
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

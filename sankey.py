@@ -97,9 +97,11 @@ def _match_whitelist(boards: dict[str, float], keywords: list[str]) -> list[str]
     names = list(boards.keys())
     chosen, used = [], set()
     for kw in keywords:
-        cands = [n for n in names if (n == kw or kw in n) and n not in used]
+        terms = [kw] + ([config.WHITELIST_ALIAS[kw]] if kw in config.WHITELIST_ALIAS else [])
+        cands = [n for n in names if n not in used and any(t in n for t in terms)]
         if cands:
-            best = min(cands, key=lambda n: (n != kw, len(n)))   # 精确优先,再取最短
+            exact = [n for n in cands if n in terms]
+            best = exact[0] if exact else min(cands, key=len)   # 精确优先,否则最短
             chosen.append(best)
             used.add(best)
             log.info("白名单 %s → %s", kw, best)
@@ -151,18 +153,37 @@ def value_color(v: float):
 # ====================================================================
 # 单帧布局:把当前数值换算成像素几何(节点 + 缎带)
 # ====================================================================
-BAL_LEFT = "__bal_left__"      # 增量入场(灰,左)
-BAL_RIGHT = "__bal_right__"    # 资金离场(灰,右)
+OTHER_ID = "__other__"        # 「其他」= 全市场主力净流入 − 前十净额
+MARKET_ID = "__market__"      # 「增量入场/资金离场」= 全市场主力净流入(闭合用)
 
 
-def compute_layout(values: dict[str, float], inflow_names, outflow_names, scale: float) -> dict:
-    """根据当前帧数值算几何。确定性:顺序固定,只有高度随数值变。
+def _make_extras(displayed_net: float, market_net):
+    """算出残差节点列表。每个 {id, mag(>0), disp(带符号), label, color, is_left}。"""
+    extras = []
+    if market_net is None:
+        # 兼容旧路径:单「其他」= 让左右闭合的差额
+        if abs(displayed_net) > 1e-9:
+            extras.append({"id": OTHER_ID, "mag": abs(displayed_net), "disp": displayed_net,
+                           "label": "其他", "color": C["other"], "is_left": displayed_net < 0})
+        return extras
+    # 双节点·严格闭合
+    other = market_net - displayed_net            # 其他 = 全市场主力净流入 − 前十净额
+    if abs(other) > 1e-9:
+        extras.append({"id": OTHER_ID, "mag": abs(other), "disp": other,
+                       "label": "其他", "color": C["other"], "is_left": other < 0})
+    if abs(market_net) > 1e-9:
+        extras.append({"id": MARKET_ID, "mag": abs(market_net), "disp": market_net,
+                       "label": "增量入场" if market_net > 0 else "资金离场",
+                       "color": C["balance_in"] if market_net > 0 else C["balance_out"],
+                       "is_left": market_net > 0})
+    return extras
 
-    - 节点高度 ∝ |当前数值| × 固定比例尺 scale,带 MIN_BAND_PX 下限;
-      scale 全程不变(prepare_scene 里按整段峰值算一次),所以盘中累计净额
-      增长时,带子会「逐渐变粗」,直观呈现资金往哪儿聚集;
-    - 左右各加一个灰色平衡节点(只有一侧非零)使两侧总额相等 → 桑基闭合;
-    - 左右缎带在 hub 两侧按相同顺序居中堆叠,hub 高度取两侧较大者。
+
+def compute_layout(values, inflow_names, outflow_names, scale, market_net=None) -> dict:
+    """把当前帧数值换算成像素几何(确定性:顺序固定,高度随数值变,scale 全程固定)。
+
+    残差/闭合节点见 _make_extras:market_net 给定时=「其他」+「增量入场/资金离场」双节点严格闭合;
+    为 None 时退化为单「其他」=让左右闭合的差额。左右缎带在 hub 两侧按相同顺序居中堆叠。
     """
     stack_top, stack_bot = L["stack_top"], L["stack_bottom"]
     center = (stack_top + stack_bot) / 2.0
@@ -171,16 +192,19 @@ def compute_layout(values: dict[str, float], inflow_names, outflow_names, scale:
     left_vals = [abs(values[n]) for n in outflow_names]
     right_vals = [abs(values[n]) for n in inflow_names]
     left_total, right_total = sum(left_vals), sum(right_vals)
-    T = max(left_total, right_total, 1e-6)
 
-    # 平衡节点:让两侧都等于 T
-    bal_left = max(0.0, right_total - left_total)     # 增量入场(左)
-    bal_right = max(0.0, left_total - right_total)    # 资金离场(右)
+    extras = _make_extras(right_total - left_total, market_net)   # displayed_net = 流入 − 流出
+    extra_map = {e["id"]: e for e in extras}
+    left_ex = [e for e in extras if e["is_left"]]
+    right_ex = [e for e in extras if not e["is_left"]]
 
-    left_nodes = list(outflow_names) + ([BAL_LEFT] if bal_left > 1e-9 else [])
-    left_node_vals = left_vals + ([bal_left] if bal_left > 1e-9 else [])
-    right_nodes = list(inflow_names) + ([BAL_RIGHT] if bal_right > 1e-9 else [])
-    right_node_vals = right_vals + ([bal_right] if bal_right > 1e-9 else [])
+    left_nodes = list(outflow_names) + [e["id"] for e in left_ex]
+    left_node_vals = left_vals + [e["mag"] for e in left_ex]
+    right_nodes = list(inflow_names) + [e["id"] for e in right_ex]
+    right_node_vals = right_vals + [e["mag"] for e in right_ex]
+
+    T = max(left_total + sum(e["mag"] for e in left_ex),
+            right_total + sum(e["mag"] for e in right_ex), 1e-6)
 
     def stack(names, vals):
         heights = [max(v * scale, config.MIN_BAND_PX) for v in vals]
@@ -195,12 +219,9 @@ def compute_layout(values: dict[str, float], inflow_names, outflow_names, scale:
     left_stack, left_h = stack(left_nodes, left_node_vals)
     right_stack, right_h = stack(right_nodes, right_node_vals)
 
-    # hub 几何
     hub_h = max(left_h, right_h)
     hub_x0 = L["hub_x"] - L["hub_w"] / 2.0
     hub_x1 = L["hub_x"] + L["hub_w"] / 2.0
-
-    # 缎带在 hub 两侧的堆叠起点(各自居中)
     left_hub_y = center - left_h / 2.0
     right_hub_y = center - right_h / 2.0
 
@@ -211,19 +232,14 @@ def compute_layout(values: dict[str, float], inflow_names, outflow_names, scale:
         hub_edge = hub_x0 if is_left else hub_x1
         for nd in stack_list:
             nm, y0, h = nd["name"], nd["y0"], nd["h"]
-            is_bal = nm in (BAL_LEFT, BAL_RIGHT)
-            if is_bal:
-                col = C["balance_in"] if nm == BAL_LEFT else C["balance_out"]
-                val = nd["h"] / scale if scale > 0 else 0.0  # 反推近似值用于标注
-                disp = bal_left if nm == BAL_LEFT else bal_right
-            else:
-                # 颜色严格按"列"定:左列恒绿(净流出)、右列恒红(净流入),
-                # 同一侧永不混色。板块归属由整段最后一帧定死,全程不变。
+            ex = extra_map.get(nm)
+            if ex:                                # 残差节点:其他 / 增量入场 / 资金离场
+                col, disp, label, is_extra = ex["color"], ex["disp"], ex["label"], True
+            else:                                 # 普通板块:左恒绿/右恒红,同侧不混色
                 col = C["outflow"] if is_left else C["inflow"]
-                disp = values[nm]
-            nodes.append({"name": nm, "x": x_center, "y0": y0, "h": h,
-                          "color": col, "value": disp, "is_left": is_left,
-                          "is_bal": is_bal})
+                disp, label, is_extra = values[nm], nm, False
+            nodes.append({"name": nm, "label": label, "x": x_center, "y0": y0, "h": h,
+                          "color": col, "value": disp, "is_left": is_left, "is_extra": is_extra})
             ribbons.append({"is_left": is_left, "color": col,
                             "x_node": node_inner, "y_node": y0, "h_node": h,
                             "x_hub": hub_edge, "y_hub": hy, "h_hub": h})
@@ -234,11 +250,9 @@ def compute_layout(values: dict[str, float], inflow_names, outflow_names, scale:
     rn, rr = build_side(right_stack, L["right_x"], False, right_hub_y)
 
     return {
-        "nodes": ln + rn,
-        "ribbons": lr + rr,
+        "nodes": ln + rn, "ribbons": lr + rr,
         "hub": {"x0": hub_x0, "x1": hub_x1, "y0": center - hub_h / 2.0, "h": hub_h},
         "total": T, "scale": scale,
-        "bal_left": bal_left, "bal_right": bal_right,
     }
 
 
@@ -335,36 +349,39 @@ def _label_two_color(d, x, y, name, val_str, color, anchor_left):
 # 场景准备 + 单帧绘制
 # ====================================================================
 def prepare_scene(keyframes, session, date_label, source="em",
-                  market_kf=None, market_prev_kf=None) -> dict:
-    """整段只算一次:固定显示集(按数据来源决定 Top-N/白名单)+ 标题 + 固定比例尺 + 氛围条。"""
+                  market_kf=None, market_prev_kf=None, market_net=None) -> dict:
+    """整段只算一次:固定显示集(按来源决定 Top-N/白名单)+ 标题 + 固定比例尺 + 氛围条。
+    market_net=全市场主力净流入(用于「其他/市场」双节点闭合,见 compute_layout)。"""
     last_boards = keyframes[-1][1]
     inflow, outflow = build_display_set(last_boards, config.TOP_N, source)
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
 
-    # 固定比例尺:扫描全程关键帧,取「两侧总额」的峰值做锚(留 5% 余量),
-    # 使任何一帧都不溢出绘图区,同时盘中带子随累计净额增长而变粗。
+    # 固定比例尺:扫描关键帧取「闭合后两侧总额」峰值(含其他/市场残差节点),留 5% 余量
     max_total = 1e-6
     for _, b, _ in keyframes:
         to = sum(abs(float(b.get(n, 0.0))) for n in outflow)
         ti = sum(abs(float(b.get(n, 0.0))) for n in inflow)
-        max_total = max(max_total, to, ti)
+        extras = _make_extras(ti - to, market_net)
+        bt = max(to + sum(e["mag"] for e in extras if e["is_left"]),
+                 ti + sum(e["mag"] for e in extras if not e["is_left"]))
+        max_total = max(max_total, bt)
     stack_h = L["stack_bottom"] - L["stack_top"]
-    max_nodes = max(len(inflow), len(outflow)) + 1            # +1 预留平衡槽
+    max_nodes = max(len(inflow), len(outflow)) + 2           # 预留 其他+市场 两个残差槽
     usable = stack_h - L["node_gap"] * max(0, max_nodes - 1)
     scale = usable / (max_total * 1.05)
 
-    log.info("显示集 流入Top=%s 流出Top=%s 峰值总额=%.1f亿 scale=%.2f px/亿",
-             inflow, outflow, max_total, scale)
+    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s 峰值总额=%.1f亿 scale=%.2f",
+             inflow, outflow, market_net, max_total, scale)
     return {"keyframes": keyframes, "inflow": inflow, "outflow": outflow,
-            "names": inflow + outflow, "session": session, "title": title,
-            "scale": scale, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}
+            "names": inflow + outflow, "session": session, "title": title, "scale": scale,
+            "market_net": market_net, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}
 
 
 def draw_frame(scene: dict, frame_index: int) -> Image.Image:
     """渲染第 frame_index 帧(0..TOTAL_FRAMES-1)→ RGB 图。"""
     p = frame_index / max(1, config.TOTAL_FRAMES - 1)
     values = interp_values(scene["keyframes"], p, scene["names"])
-    lay = compute_layout(values, scene["inflow"], scene["outflow"], scene["scale"])
+    lay = compute_layout(values, scene["inflow"], scene["outflow"], scene["scale"], scene.get("market_net"))
     # 中枢用"柔光核心":左右缎带都延伸到中线相接(无硬竖条),交汇处靠辉光桥接
     for rb in lay["ribbons"]:
         rb["x_hub"] = L["hub_x"]
@@ -422,12 +439,8 @@ def draw_frame(scene: dict, frame_index: int) -> Image.Image:
         d.rectangle([x0, nd["y0"], x1, nd["y0"] + nd["h"]],
                     fill=(*nd["color"], 255), outline=(255, 255, 255, 60), width=1)
         ycen = nd["y0"] + nd["h"] / 2
-        if nd["is_bal"]:
-            name = "其他"                         # 平衡节点:吃掉差值(未显示板块+漏损)使桑基闭合
-            val_str = f"{nd['value']:.1f}"
-        else:
-            name = nd["name"]
-            val_str = f"{nd['value']:+.1f}"
+        name = nd["label"]                        # 残差节点用 label(其他/增量入场/资金离场),板块用板块名
+        val_str = f"{nd['value']:+.1f}"
         _label_two_color(d, (x0 - L["label_pad"]) if nd["is_left"] else (x1 + L["label_pad"]),
                          ycen, name, val_str, nd["color"], anchor_left=nd["is_left"])
 
