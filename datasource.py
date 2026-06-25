@@ -155,27 +155,28 @@ def _fetch_ths(kind: str) -> dict[str, float]:
 # ----------------------------------------------------------------------
 # 对外入口
 # ----------------------------------------------------------------------
-def fetch_snapshot(kind: str | None = None) -> dict[str, float]:
-    """抓一次板块资金流快照 {名称: 净流入(亿)}。
-    PREFER_SOURCE=em → 只在东财系内重试(主力净流入口径:东财直连→akshare东财兜底);
-    PREFER_SOURCE=ths → 只用同花顺(净额口径)。两口径不混用,避免时间序列跳变。"""
+def fetch_snapshot(kind: str | None = None) -> tuple[dict[str, float], str]:
+    """抓一次板块资金流快照,返回 (data, source)。source ∈ {'em','ths'}。
+    默认 em 优先(东财主力净流入,口径准、概念干净→渲染走自动 Top-N);
+    东财整体拿不到才回退 ths(同花顺净额→渲染套白名单滤掉宽泛大类)。
+    PREFER_SOURCE=ths 则只用同花顺。来源会被渲染端用来决定显示方式。"""
     kind = kind or config.SECTOR_KIND
-    if config.PREFER_SOURCE == "ths":
-        methods = [("同花顺", lambda: _fetch_ths(kind))]
-    else:
-        methods = [("东财直连", lambda: _fetch_eastmoney(kind)),
-                   ("akshare东财", lambda: _fetch_akshare(kind))]
+    em = [("东财直连", lambda: _fetch_eastmoney(kind)),
+          ("akshare东财", lambda: _fetch_akshare(kind))]
+    ths = [("同花顺", lambda: _fetch_ths(kind))]
+    plan = [("ths", ths)] if config.PREFER_SOURCE == "ths" else [("em", em), ("ths", ths)]
     errs = []
-    for name, fn in methods:
-        try:
-            data = fn()
-            if data:
-                log.info("数据源=%s 板块=%d", name, len(data))
-                return data
-        except Exception as e:
-            log.warning("数据源[%s]失败: %s", name, str(e)[:120])
-            errs.append(f"{name}: {str(e)[:80]}")
-    raise DataSourceError(f"[{config.PREFER_SOURCE}] 数据源全失败 -> " + " | ".join(errs))
+    for src, methods in plan:
+        for name, fn in methods:
+            try:
+                data = fn()
+                if data:
+                    log.info("数据源=%s(%s) 板块=%d", name, src, len(data))
+                    return data, src
+            except Exception as e:
+                log.warning("数据源[%s]失败: %s", name, str(e)[:120])
+                errs.append(f"{name}: {str(e)[:60]}")
+    raise DataSourceError("数据源全失败 -> " + " | ".join(errs))
 
 
 # ----------------------------------------------------------------------
@@ -246,7 +247,8 @@ def fetch_market_overview() -> dict:
 if __name__ == "__main__":
     # 手动单测:python datasource.py
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    snap = fetch_snapshot()
+    snap, src = fetch_snapshot()
+    print("来源:", src)
     top = sorted(snap.items(), key=lambda kv: kv[1], reverse=True)
     print(f"\n共 {len(snap)} 个板块。主力净流入 Top10(亿元):")
     for n, v in top[:10]:

@@ -48,11 +48,11 @@ def daily_path(date_str: str, kind: str | None = None):
     return config.DATA_DIR / f"{kind}_{date_str}.jsonl"
 
 
-def append_snapshot(date_str: str, boards: dict[str, float],
-                    kind: str | None = None, ts: str | None = None) -> str:
-    """追加一个快照到当日文件。ts 缺省取当前北京时间。"""
+def append_snapshot(date_str: str, boards: dict[str, float], kind: str | None = None,
+                    ts: str | None = None, src: str = "em") -> str:
+    """追加一个快照到当日文件。ts 缺省取当前北京时间;src 记录数据来源(em/ths)。"""
     ts = ts or now_tz().isoformat(timespec="seconds")
-    rec = {"ts": ts, "boards": boards}
+    rec = {"ts": ts, "boards": boards, "src": src}
     with open(daily_path(date_str, kind), "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return ts
@@ -70,10 +70,16 @@ def load_snapshots(date_str: str, kind: str | None = None) -> list[dict]:
             continue
         try:
             r = json.loads(line)
-            recs[r["ts"]] = r["boards"]
+            recs[r["ts"]] = {"boards": r["boards"], "src": r.get("src", "em")}
         except Exception:
             continue
-    return [{"ts": ts, "boards": b} for ts, b in sorted(recs.items())]
+    return [{"ts": ts, "boards": v["boards"], "src": v["src"]} for ts, v in sorted(recs.items())]
+
+
+def last_source(date_str: str, kind: str | None = None) -> str:
+    """当日最后一帧的数据来源(em/ths),给渲染端决定显示方式;无数据默认 em。"""
+    snaps = load_snapshots(date_str, kind)
+    return snaps[-1]["src"] if snaps else "em"
 
 
 # ---------------------- 时间轴映射 ----------------------

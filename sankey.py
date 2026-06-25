@@ -108,13 +108,13 @@ def _match_whitelist(boards: dict[str, float], keywords: list[str]) -> list[str]
     return chosen
 
 
-def build_display_set(last_boards: dict[str, float], top_n: int):
+def build_display_set(last_boards: dict[str, float], top_n: int, source: str = "em"):
     """确定全程固定显示集与顺序,返回 (inflow_names, outflow_names),从上到下固定。
 
-    - WHITELIST 非空:只显示白名单匹配到的板块,按当前资金流「方向」分左右、|金额|排序;
-    - WHITELIST 为空:自动取 流入 TopN(右)/ 流出 TopN(左)。
+    - source=='ths'(同花顺,混入大量宽泛大类)且 WHITELIST 非空:只显示白名单匹配到的板块;
+    - source=='em'(东财,概念干净)或无白名单:自动取 流入 TopN(右)/ 流出 TopN(左)。
     """
-    if config.WHITELIST:
+    if source == "ths" and config.WHITELIST:
         chosen = _match_whitelist(last_boards, config.WHITELIST)
         inflow = sorted([n for n in chosen if last_boards.get(n, 0.0) >= 0],
                         key=lambda n: last_boards[n], reverse=True)
@@ -329,10 +329,11 @@ def _label_two_color(d, x, y, name, val_str, color, anchor_left):
 # ====================================================================
 # 场景准备 + 单帧绘制
 # ====================================================================
-def prepare_scene(keyframes, session, date_label, market_kf=None, market_prev_kf=None) -> dict:
-    """整段只算一次:固定显示集 + 标题 + 固定比例尺 + 全市场氛围条序列。"""
+def prepare_scene(keyframes, session, date_label, source="em",
+                  market_kf=None, market_prev_kf=None) -> dict:
+    """整段只算一次:固定显示集(按数据来源决定 Top-N/白名单)+ 标题 + 固定比例尺 + 氛围条。"""
     last_boards = keyframes[-1][1]
-    inflow, outflow = build_display_set(last_boards, config.TOP_N)
+    inflow, outflow = build_display_set(last_boards, config.TOP_N, source)
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
 
     # 固定比例尺:扫描全程关键帧,取「两侧总额」的峰值做锚(留 5% 余量),

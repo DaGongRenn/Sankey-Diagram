@@ -12,8 +12,8 @@ from run_window import date_label
 date_str = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].strip() else snapshots.today_str()
 print("日期:", date_str)
 
-boards = datasource.fetch_snapshot("concept")          # 当前=收盘后即今日收盘累计
-print("主图数据 OK,板块数:", len(boards))
+boards, src = datasource.fetch_snapshot("concept")     # 当前=收盘后即今日收盘累计
+print("主图数据 OK,来源:", src, "(em=东财自动Top-N / ths=同花顺套白名单) 板块数:", len(boards))
 top = sorted(boards.items(), key=lambda kv: kv[1], reverse=True)[:5]
 print("流入Top5:", [(n, round(v, 1)) for n, v in top])
 
@@ -26,7 +26,7 @@ except Exception as e:
     print("氛围条失败(忽略,不影响主图):", e)
 
 kf = [(1.0, boards, "15:00")]                          # 单关键帧=收盘态
-scene = sankey.prepare_scene(kf, "close", date_label(date_str), mkf, [])
+scene = sankey.prepare_scene(kf, "close", date_label(date_str), src, mkf, [])
 out = config.OUT_DIR / f"close_{date_str}.png"
 sankey.draw_frame(scene, config.TOTAL_FRAMES - 1).save(out)
 print("已生成静态图:", out)

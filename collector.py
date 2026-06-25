@@ -82,8 +82,8 @@ def poll_window(date_str: str, kind: str, start: str, end: str) -> int:
         t0 = time.time()
         ok = False
         try:
-            boards = fetch_snapshot(kind)
-            ts = append_snapshot(date_str, boards, kind)
+            boards, src = fetch_snapshot(kind)
+            ts = append_snapshot(date_str, boards, kind, src=src)
             n += 1
             ok = True
             inflow = sum(v for v in boards.values() if v > 0)
@@ -126,10 +126,10 @@ def main():
              args.session, date_str, args.kind, args.once)
 
     if args.once:
-        boards = fetch_snapshot(args.kind)
-        ts = append_snapshot(date_str, boards, args.kind)
+        boards, src = fetch_snapshot(args.kind)
+        ts = append_snapshot(date_str, boards, args.kind, src=src)
         top = sorted(boards.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        log.info("单次采集 ts=%s 板块=%d 流入Top5=%s", ts, len(boards),
+        log.info("单次采集 ts=%s 来源=%s 板块=%d 流入Top5=%s", ts, src, len(boards),
                  [(n, round(v, 2)) for n, v in top])
         return
 
