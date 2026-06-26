@@ -2,15 +2,17 @@
 """
 sankey.py —— 桑基图核心:确定性布局 + 关键帧插值 + Pillow 逐帧绘制(科技风)。
 
-三列:左(净流出,绿) → 中(主力资金 hub) → 右(净流入,红)。
-闭合规则:主力净流入/流出不守恒,加灰色平衡节点让左右总额相等,桑基永远闭合。
+三列:左(净流出 Top12,绿) → 中(主力资金 hub) → 右(净流入 Top12,红)。
 
-稳定性(确定性)三件套:
-  1) 固定显示集:用整段最后一帧取 流入 TopN / 流出 TopN,全程不再换板块;
-  2) 固定顺序:按最后一帧 |金额| 降序定上下次序,全程不变;
-  3) 双侧平衡槽:左右各预留一个灰槽,每帧只有一侧非零,几何稳定、不抖。
+闭合/配平规则(见 _balance_nodes,让左右总额严格相等):
+  1) 主力净额(全市场主力资金净额,带符号)按方向落一侧:>0→左侧·金色;<0→右侧·灰色;
+  2) 「其他板块」补差额:左>右→右补(红)/ 左<右→左补(绿);与主力同侧时显示在主力上面;
+  3) 抓不到主力净额时,用两侧差值当主力净额、放到值小的一侧,正好配平,不再加其他板块;
+  4) 主力净额超大(远超前 12 板块之和)时,绘制高度封顶到「同方向那侧前 12 板块之和」,
+     其余由「其他板块」补足,避免主力把整图压成一条缝(标注仍显真实值)。
 
-同输入必同输出(无随机)。金额单位:亿元。
+稳定性(确定性):固定显示集(整段最后一帧定 流入/流出 Top12)+ 固定顺序 + 固定比例尺,
+全程不重挑、不重排、无随机 → 同输入必同输出。金额单位:亿元。
 """
 from __future__ import annotations
 import logging
@@ -153,40 +155,77 @@ def value_color(v: float):
 # ====================================================================
 # 单帧布局:把当前数值换算成像素几何(节点 + 缎带)
 # ====================================================================
-OTHER_ID = "__other__"        # 「其他」= 全市场主力净流入 − 前十净额
-MARKET_ID = "__market__"      # 「增量入场/资金离场」= 全市场主力净流入(闭合用)
+MAIN_ID  = "__main__"         # 「主力净额」:全市场主力资金净额(带符号),按方向落一侧
+OTHER_ID = "__other__"        # 「其他板块」:配平左右总额的差额节点
 
 
-def _make_extras(displayed_net: float, market_net):
-    """算出残差节点列表。每个 {id, mag(>0), disp(带符号), label, color, is_left}。"""
-    extras = []
+def _main_node(net: float, is_left: bool) -> dict:
+    """主力净额节点。net 带符号(标注用真实值);draw_mag 为绘制用量(非负)。左金 / 右灰。"""
+    return {"id": MAIN_ID, "label": config.MAIN_LABEL, "value": net,
+            "draw_mag": abs(net), "is_left": is_left,
+            "color": C["balance_in"] if is_left else C["balance_out"]}
+
+
+def _other_node(mag: float, is_left: bool) -> dict:
+    """其他板块(配平差额)。颜色随所在侧(左绿/右红),数值按该侧符号标注。"""
+    return {"id": OTHER_ID, "label": config.OTHER_LABEL,
+            "value": (-mag if is_left else mag), "draw_mag": mag, "is_left": is_left,
+            "color": C["outflow"] if is_left else C["inflow"]}
+
+
+def _balance_nodes(left_sum: float, right_sum: float, market_net):
+    """按规则算两侧附加节点(主力净额 + 其他板块),返回 (left_extras, right_extras)。
+
+    每个 extra:{id,label,value(带符号·标注),draw_mag(>0·绘制),is_left,color}。
+    列表内顺序即自上而下渲染序:其他板块在前(上)、主力净额在后(下)→ 满足
+    「其他板块与主力同侧时显示在主力上面」。配平后两侧绘制总额相等(桑基闭合)。
+
+    - market_net=None:用两侧差值当主力净额,放到值小的一侧,正好配平,不加其他板块;
+    - market_net 给定:主力净额按方向落一侧(>0左金 / <0右灰,超大值绘制封顶),
+      再用「其他板块」把较小一侧补到与较大侧相等。
+    """
+    left_ex: list[dict] = []
+    right_ex: list[dict] = []
+
     if market_net is None:
-        # 退化(没拿到全市场主力净流入):单节点=增量入场/资金离场=流入−流出差额,放让两侧相等那一侧
-        if displayed_net > 1e-9:          # 流入>流出 → 左侧补「增量入场」
-            extras.append({"id": MARKET_ID, "mag": displayed_net, "disp": displayed_net,
-                           "label": "增量入场", "color": C["balance_in"], "is_left": True})
-        elif displayed_net < -1e-9:       # 流出>流入 → 右侧补「资金离场」
-            extras.append({"id": MARKET_ID, "mag": -displayed_net, "disp": displayed_net,
-                           "label": "资金离场", "color": C["balance_out"], "is_left": False})
-        return extras
-    # 双节点·严格闭合
-    other = market_net - displayed_net            # 其他 = 全市场主力净流入 − 前十净额
-    if abs(other) > 1e-9:
-        extras.append({"id": OTHER_ID, "mag": abs(other), "disp": other,
-                       "label": "其他", "color": C["other"], "is_left": other < 0})
-    if abs(market_net) > 1e-9:
-        extras.append({"id": MARKET_ID, "mag": abs(market_net), "disp": market_net,
-                       "label": "增量入场" if market_net > 0 else "资金离场",
-                       "color": C["balance_in"] if market_net > 0 else C["balance_out"],
-                       "is_left": market_net > 0})
-    return extras
+        diff = right_sum - left_sum                  # >0:右大左小;<0:左大右小
+        if diff > 1e-9:
+            left_ex.append(_main_node(diff, True))   # 放左(较小侧),金色,视作净流入
+        elif diff < -1e-9:
+            right_ex.append(_main_node(diff, False)) # 放右(较小侧),灰色,视作净流出
+        return left_ex, right_ex
+
+    M = float(market_net)
+    left_draw, right_draw = left_sum, right_sum
+    if abs(M) > 1e-9:
+        main_is_left = M > 0
+        cap = right_sum if M > 0 else left_sum       # 封顶=同方向那侧前 12 板块之和
+        draw = min(abs(M), cap) if cap > 1e-9 else abs(M)   # 超大值绘制只到封顶
+        node = _main_node(M, main_is_left)
+        node["draw_mag"] = draw
+        if main_is_left:
+            left_ex.append(node); left_draw += draw
+        else:
+            right_ex.append(node); right_draw += draw
+
+    d = left_draw - right_draw
+    if d > 1e-9:                                      # 左 > 右 → 右侧补其他板块(红)
+        right_ex.insert(0, _other_node(d, False))     # insert(0):置于该侧顶部(主力之上)
+    elif d < -1e-9:                                   # 左 < 右 → 左侧补其他板块(绿)
+        left_ex.insert(0, _other_node(-d, True))
+    return left_ex, right_ex
+
+
+def side_total(sector_sum: float, extras: list[dict]) -> float:
+    """该侧绘制总额(亿元)= 板块之和 + 附加节点绘制量之和。"""
+    return sector_sum + sum(e["draw_mag"] for e in extras)
 
 
 def compute_layout(values, inflow_names, outflow_names, scale, market_net=None) -> dict:
-    """把当前帧数值换算成像素几何(确定性:顺序固定,高度随数值变,scale 全程固定)。
+    """把当前帧数值换算成像素几何。确定性:顺序固定、scale 全程固定、无随机。
 
-    残差/闭合节点见 _make_extras:market_net 给定时=「其他」+「增量入场/资金离场」双节点严格闭合;
-    为 None 时退化为单「其他」=让左右闭合的差额。左右缎带在 hub 两侧按相同顺序居中堆叠。
+    左=净流出板块(绿)、右=净流入板块(红);主力净额/其他板块配平见 _balance_nodes。
+    高度 ∝ 数值×scale,配平后左右总额相等 → 两侧等高、对齐、闭合。
     """
     stack_top, stack_bot = L["stack_top"], L["stack_bottom"]
     center = (stack_top + stack_bot) / 2.0
@@ -194,40 +233,31 @@ def compute_layout(values, inflow_names, outflow_names, scale, market_net=None) 
 
     left_vals = [abs(values[n]) for n in outflow_names]
     right_vals = [abs(values[n]) for n in inflow_names]
-    left_total, right_total = sum(left_vals), sum(right_vals)
+    left_sum, right_sum = sum(left_vals), sum(right_vals)
 
-    extras = _make_extras(right_total - left_total, market_net)   # displayed_net = 流入 − 流出
-    extra_map = {e["id"]: e for e in extras}
-    left_ex = [e for e in extras if e["is_left"]]
-    right_ex = [e for e in extras if not e["is_left"]]
+    left_ex, right_ex = _balance_nodes(left_sum, right_sum, market_net)
+    T = max(side_total(left_sum, left_ex), side_total(right_sum, right_ex), 1e-6)
 
-    H_avail = stack_bot - stack_top
-    T = max(left_total + sum(e["mag"] for e in left_ex),
-            right_total + sum(e["mag"] for e in right_ex), 1e-6)     # 真实总额(hub 标注用)
     hub_x0 = L["hub_x"] - L["hub_w"] / 2.0
     hub_x1 = L["hub_x"] + L["hub_w"] / 2.0
 
-    def build_side(board_names, board_vals, exs, x_center, is_left):
-        # 板块高度 ∝ 值×scale;残差(其他/增量入场/资金离场)作为「填充」,把本侧补满到
-        # H_avail(扣间隙)→ 左右严格对齐 + 占满画面;残差标注仍显真实值(只是绘制高度=填充量)。
-        n = len(board_vals) + len(exs)
-        gaps = gap * max(0, n - 1)
-        bh = [max(v * scale, config.MIN_BAND_PX) for v in board_vals]
-        room = max(0.0, (H_avail - gaps) - sum(bh))                # 留给残差的总高
-        mag_sum = sum(e["mag"] for e in exs) or 1.0
-        eh = [max(room * e["mag"] / mag_sum, config.MIN_BAND_PX) for e in exs]
-        names = list(board_names) + [e["id"] for e in exs]
-        heights = bh + eh
+    def build_side(sector_names, sector_vals, exs, x_center, is_left):
+        # 自上而下:板块(固定序)→ 附加节点(exs 已排好:其他板块在上、主力净额在下)
+        names = list(sector_names) + [e["id"] for e in exs]
+        mags = list(sector_vals) + [e["draw_mag"] for e in exs]
+        heights = [max(m * scale, config.MIN_BAND_PX) for m in mags]
         sum_h = sum(heights)
+        gaps = gap * max(0, len(heights) - 1)
         node_inner = (x_center + L["node_w"] / 2.0) if is_left else (x_center - L["node_w"] / 2.0)
         hub_edge = hub_x0 if is_left else hub_x1
         y = center - (sum_h + gaps) / 2.0          # 节点带间隙、整体居中
         hy = center - sum_h / 2.0                  # 缎带在 hub 侧无间隙紧贴、居中
+        ex_map = {e["id"]: e for e in exs}
         nodes, ribbons = [], []
         for nm, h in zip(names, heights):
-            ex = extra_map.get(nm)
-            if ex:                                 # 残差节点:其他 / 增量入场 / 资金离场
-                col, disp, label, is_extra = ex["color"], ex["disp"], ex["label"], True
+            ex = ex_map.get(nm)
+            if ex:                                 # 附加节点:主力净额 / 其他板块
+                col, disp, label, is_extra = ex["color"], ex["value"], ex["label"], True
             else:                                  # 普通板块:左恒绿/右恒红,同侧不混色
                 col = C["outflow"] if is_left else C["inflow"]
                 disp, label, is_extra = values[nm], nm, False
@@ -345,25 +375,26 @@ def _label_two_color(d, x, y, name, val_str, color, anchor_left):
 def prepare_scene(keyframes, session, date_label, source="em",
                   market_kf=None, market_prev_kf=None, market_net=None) -> dict:
     """整段只算一次:固定显示集(按来源决定 Top-N/白名单)+ 标题 + 固定比例尺 + 氛围条。
-    market_net=全市场主力净流入(用于「其他/市场」双节点闭合,见 compute_layout)。"""
+    market_net=全市场主力资金净额(主力净额 + 其他板块配平用,见 _balance_nodes);None→用两侧差值。"""
     last_boards = keyframes[-1][1]
     inflow, outflow = build_display_set(last_boards, config.TOP_N, source)
     title = config.TITLE_TMPL.format(date=date_label, label=config.SESSION_LABEL[session])
 
-    # 固定比例尺:扫描关键帧取「闭合后两侧总额」峰值(含其他/市场残差节点),留 5% 余量
-    # 比例尺:峰值帧「较大板块侧」占可用高 ~2/3,残差当填充补满其余 ~1/3 → 板块醒目、两侧对齐占满
-    max_board = 1e-6
+    # 固定比例尺:扫描关键帧,取「配平后每侧总额」(含主力净额封顶 + 其他板块)的峰值,
+    # 令峰值帧占满可用高度的 ~95%(全程不变、无随机 → 同输入同输出)。
+    peak = 1e-6
     for _, b, _ in keyframes:
-        to = sum(abs(float(b.get(n, 0.0))) for n in outflow)
-        ti = sum(abs(float(b.get(n, 0.0))) for n in inflow)
-        max_board = max(max_board, to, ti)
+        ls = sum(abs(float(b.get(n, 0.0))) for n in outflow)
+        rs = sum(abs(float(b.get(n, 0.0))) for n in inflow)
+        le, re = _balance_nodes(ls, rs, market_net)
+        peak = max(peak, side_total(ls, le), side_total(rs, re))
     stack_h = L["stack_bottom"] - L["stack_top"]
-    max_nodes = max(len(inflow), len(outflow)) + 2
+    max_nodes = config.TOP_N + 2                              # 一侧最多 = 12 板块 + 主力 + 其他
     usable = stack_h - L["node_gap"] * max(0, max_nodes - 1)
-    scale = (2.0 / 3.0) * usable / max_board                 # 板块峰值占 ~2/3,残差填满其余
+    scale = 0.95 * usable / peak
 
-    log.info("显示集 流入Top=%s 流出Top=%s 全市场主力净流入=%s 板块峰值=%.1f亿 scale=%.3f",
-             inflow, outflow, market_net, max_board, scale)
+    log.info("显示集 流入Top=%s 流出Top=%s 主力净额=%s 配平后峰值=%.1f亿 scale=%.3f",
+             inflow, outflow, market_net, peak, scale)
     return {"keyframes": keyframes, "inflow": inflow, "outflow": outflow,
             "names": inflow + outflow, "session": session, "title": title, "scale": scale,
             "market_net": market_net, "market_kf": market_kf or [], "market_prev_kf": market_prev_kf or []}
