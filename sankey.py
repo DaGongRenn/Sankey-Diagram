@@ -240,11 +240,19 @@ def compute_layout(values, inflow_names, outflow_names, scale) -> dict:
 
     ln, lr, lh = build_side(outflow_names, left_vals, left_ex, L["left_x"], True)
     rn, rr, rh = build_side(inflow_names, right_vals, right_ex, L["right_x"], False)
-    hub_h = max(lh, rh)
+    # 中枢光柱:覆盖两侧节点的「完整堆叠范围(含间隙)」再上下各外扩 hub_pad,
+    # 盖住「高列(节点多·间隙多)比中枢高出来」造成的左右视觉落差——
+    # 极端一边倒的交易日(几乎全是净流出),配平节点撑满一侧时尤其明显。
+    all_nodes = ln + rn
+    top_y = min(nd["y0"] for nd in all_nodes)
+    bot_y = max(nd["y0"] + nd["h"] for nd in all_nodes)
+    pad = L.get("hub_pad", 16)
+    hub_y0 = top_y - pad
+    hub_h = (bot_y - top_y) + 2 * pad
 
     return {
         "nodes": ln + rn, "ribbons": lr + rr,
-        "hub": {"x0": hub_x0, "x1": hub_x1, "y0": center - hub_h / 2.0, "h": hub_h},
+        "hub": {"x0": hub_x0, "x1": hub_x1, "y0": hub_y0, "h": hub_h},
         "total": T, "scale": scale,
     }
 
@@ -317,25 +325,33 @@ def _background():
     return img
 
 
-def _label_two_color(d, x, y, name, val_str, color, anchor_left):
-    """节点旁标注:板块名(白) + 数值(随色)。自动缩字号避免溢出屏幕。"""
+def _label_two_color(d, x, y, name, val_str, color, anchor_left, unit="亿"):
+    """节点旁标注:板块名(白) + 数值(随色) + 单位「亿」(随色,中文字体略小)。
+    数字用科技字体、单位用中文字体(Bahnschrift 无 CJK 字形,混排会出豆腐块)。自动缩字号防溢出。"""
     margin = L.get("label_margin", 10)
     avail = (x - margin) if anchor_left else (config.W - margin - x)
+    g1, g2 = 8, 3                                  # 名↔值、值↔单位 间距
     size = 30
     while size >= 20:
         fn, ft = font_cjk(size), font_tech(size)
-        w = fn.getlength(name) + 8 + ft.getlength(val_str)
+        fu = font_cjk(max(16, size - 6))
+        w = fn.getlength(name) + g1 + ft.getlength(val_str) + g2 + fu.getlength(unit)
         if w <= avail:
             break
         size -= 2
     fn, ft = font_cjk(size), font_tech(size)
+    fu = font_cjk(max(16, size - 6))
     white = C["text"]
-    if anchor_left:   # 右对齐,从节点向左排:… 名 值|x
-        d.text((x, y), val_str, font=ft, fill=color, anchor="rm")
-        d.text((x - ft.getlength(val_str) - 8, y), name, font=fn, fill=white, anchor="rm")
-    else:             # 左对齐:x|名 值 …
+    vw, uw = ft.getlength(val_str), fu.getlength(unit)
+    if anchor_left:   # 右对齐,从 x 向左排:… 名  值 单位|x
+        d.text((x, y), unit, font=fu, fill=color, anchor="rm")
+        d.text((x - uw - g2, y), val_str, font=ft, fill=color, anchor="rm")
+        d.text((x - uw - g2 - vw - g1, y), name, font=fn, fill=white, anchor="rm")
+    else:             # 左对齐:x|名  值 单位 …
         d.text((x, y), name, font=fn, fill=white, anchor="lm")
-        d.text((x + fn.getlength(name) + 8, y), val_str, font=ft, fill=color, anchor="lm")
+        nx = x + fn.getlength(name) + g1
+        d.text((nx, y), val_str, font=ft, fill=color, anchor="lm")
+        d.text((nx + vw + g2, y), unit, font=fu, fill=color, anchor="lm")
 
 
 # ====================================================================
