@@ -26,11 +26,13 @@ log = logging.getLogger("selfcheck")
 SYN_DATE = "2099-01-01"          # 合成数据专用日期,避免和真实快照混淆
 SYN_KIND = config.SECTOR_KIND
 
-# 贴合「概念板块」的一批名字(含用户偏好板块),数量需 > 2*TOP_N 以便挑 Top
-BOARDS = ["半导体", "CPO", "算力", "PCB", "存储芯片", "人形机器人", "商业航天",
-          "光模块", "AI智能体", "券商", "房地产", "医药", "白酒", "煤炭",
-          "钢铁", "锂电池", "汽车整车", "电力", "游戏", "消费电子",
-          "创新药", "数据要素", "固态电池", "稀土永磁", "培育钻石", "中字头"]
+# 取自「100大热门板块清单」的板块名(需与 WHITELIST 匹配,数量 > 2*TOP_N 以便挑 Top)
+BOARDS = ["CPO", "光模块", "PCB", "铜连接", "光芯片", "AI服务器", "液冷", "数据中心",
+          "AI芯片", "GPU", "HBM", "存储芯片", "半导体设备", "晶圆代工", "光刻机",
+          "碳化硅", "人形机器人", "机器视觉", "减速器", "伺服电机", "固态电池",
+          "锂电池", "光伏", "风电", "氢能源", "创新药", "CRO", "医疗器械", "中药",
+          "白酒", "啤酒", "家电", "医美", "黄金珠宝", "旅游酒店", "商业航天",
+          "低空经济", "卫星互联网", "量子科技", "数据要素", "无人驾驶"]
 
 
 def _trading_times(date_str: str):
@@ -61,8 +63,8 @@ def synth_day(date_str: str):
 
     # 每个板块:终值(亿元)+ 带波动的随机游走,起点≈0、终点钉到终值
     finals = rng.normal(0, 9, len(BOARDS))
-    finals[0] += 12      # 半导体偏强流入
-    finals[5] -= 10      # 人形机器人偏流出
+    finals[0] += 12      # CPO 偏强流入
+    finals[5] -= 10      # AI服务器 偏流出
     paths = []
     for f in finals:
         incr = rng.normal(0, 1.0, n)
@@ -104,7 +106,7 @@ def render_session(session: str) -> bool:
     mkf = snapshots.build_market_keyframes(snapshots.load_market(SYN_DATE), session)
     pmkf = snapshots.build_market_keyframes(snapshots.find_prev_market(SYN_DATE), session)
     source = snapshots.last_source(SYN_DATE, SYN_KIND)
-    scene = sankey.prepare_scene(kf, session, date_label(SYN_DATE), source, mkf, pmkf, market_net=-250.0)
+    scene = sankey.prepare_scene(kf, session, date_label(SYN_DATE), source, mkf, pmkf)
     out = config.OUT_DIR / f"selfcheck_{session}.mp4"
     frames_to_mp4(scene, out)
 
