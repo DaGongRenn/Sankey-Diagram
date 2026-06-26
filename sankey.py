@@ -240,19 +240,13 @@ def compute_layout(values, inflow_names, outflow_names, scale) -> dict:
 
     ln, lr, lh = build_side(outflow_names, left_vals, left_ex, L["left_x"], True)
     rn, rr, rh = build_side(inflow_names, right_vals, right_ex, L["right_x"], False)
-    # 中枢光柱:覆盖两侧节点的「完整堆叠范围(含间隙)」再上下各外扩 hub_pad,
-    # 盖住「高列(节点多·间隙多)比中枢高出来」造成的左右视觉落差——
-    # 极端一边倒的交易日(几乎全是净流出),配平节点撑满一侧时尤其明显。
-    all_nodes = ln + rn
-    top_y = min(nd["y0"] for nd in all_nodes)
-    bot_y = max(nd["y0"] + nd["h"] for nd in all_nodes)
-    pad = L.get("hub_pad", 16)
-    hub_y0 = top_y - pad
-    hub_h = (bot_y - top_y) + 2 * pad
+    # 中枢光柱:取较高一侧的缎带汇入高度,再放大一点点(hub_grow,默认 +3%)居中,
+    # 略微盖住左右细微落差,但不喧宾夺主。
+    hub_h = max(lh, rh) * L.get("hub_grow", 1.03)
 
     return {
         "nodes": ln + rn, "ribbons": lr + rr,
-        "hub": {"x0": hub_x0, "x1": hub_x1, "y0": hub_y0, "h": hub_h},
+        "hub": {"x0": hub_x0, "x1": hub_x1, "y0": center - hub_h / 2.0, "h": hub_h},
         "total": T, "scale": scale,
     }
 
