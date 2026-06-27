@@ -176,12 +176,8 @@ def _fetch_ths(kind: str) -> dict[str, float]:
 # ----------------------------------------------------------------------
 # 对外入口
 # ----------------------------------------------------------------------
-def fetch_snapshot(kind: str | None = None) -> tuple[dict[str, float], str]:
-    """抓一次板块资金流快照,返回 (data, source)。source ∈ {'em','ths'}。
-    默认 em 优先(东财主力净流入,口径准、概念干净→渲染走自动 Top-N);
-    东财整体拿不到才回退 ths(同花顺净额→渲染套白名单滤掉宽泛大类)。
-    PREFER_SOURCE=ths 则只用同花顺。来源会被渲染端用来决定显示方式。"""
-    kind = kind or config.SECTOR_KIND
+def _try_snapshot_once(kind: str) -> tuple[dict[str, float], str]:
+    """单次尝试所有数据源链,成功返回 (data, source),失败抛 DataSourceError。"""
     em = [("东财直连", lambda: _fetch_eastmoney(kind)),
           ("akshare东财", lambda: _fetch_akshare(kind))]
     ths = [("同花顺", lambda: _fetch_ths(kind))]
@@ -200,29 +196,57 @@ def fetch_snapshot(kind: str | None = None) -> tuple[dict[str, float], str]:
     raise DataSourceError("数据源全失败 -> " + " | ".join(errs))
 
 
+def fetch_snapshot(kind: str | None = None) -> tuple[dict[str, float], str]:
+    """抓一次板块资金流快照,返回 (data, source)。source ∈ {'em','ths'}。
+    失败后自动重试(换节点/换源),最多 SNAPSHOT_RETRIES 轮,不轻易放弃。"""
+    kind = kind or config.SECTOR_KIND
+    last_err = None
+    for attempt in range(1, config.SNAPSHOT_RETRIES + 1):
+        try:
+            return _try_snapshot_once(kind)
+        except DataSourceError as e:
+            last_err = e
+            if attempt < config.SNAPSHOT_RETRIES:
+                wait = config.SNAPSHOT_RETRY_DELAY * attempt
+                log.warning("第%d/%d轮全失败, %.1fs后重试...", attempt, config.SNAPSHOT_RETRIES, wait)
+                time.sleep(wait)
+    raise last_err  # type: ignore[misc]
+
+
 def fetch_all_snapshots(kind: str | None = None) -> tuple[dict[str, float], str]:
-    """抓取概念+行业板块合并数据(固定清单模式用)。
+    """抓取概念+行业板块合并数据(固定清单模式用),带重试。
     返回 (merged_data, source)。source ∈ {'em','ths'}。"""
     kind = kind or config.SECTOR_KIND
 
-    # 先抓概念
+    # 先抓概念(内部已有3轮重试)
     concept_data, source = fetch_snapshot(kind)
     merged = dict(concept_data)
 
-    # 再抓行业(如果开关打开)
+    # 再抓行业(如果开关打开),行业抓取失败也重试
     if config.FETCH_INDUSTRY:
         industry_kind = "industry"
-        try:
-            if config.PREFER_SOURCE == "em":
-                ind_data = _fetch_eastmoney(industry_kind)
-                ind_data = _filter_boards(ind_data)
-            else:
-                ind_data = _fetch_ths(industry_kind)
-                ind_data = _filter_boards(ind_data)
+        ind_data = None
+        for attempt in range(1, config.SNAPSHOT_RETRIES + 1):
+            try:
+                if config.PREFER_SOURCE == "em":
+                    ind_data = _filter_boards(_fetch_eastmoney(industry_kind))
+                else:
+                    ind_data = _filter_boards(_fetch_ths(industry_kind))
+                if ind_data:
+                    break
+            except Exception as e:
+                if attempt < config.SNAPSHOT_RETRIES:
+                    wait = config.SNAPSHOT_RETRY_DELAY * attempt
+                    log.warning("行业抓取第%d/%d轮失败, %.1fs后重试: %s",
+                                attempt, config.SNAPSHOT_RETRIES, wait, str(e)[:60])
+                    time.sleep(wait)
+                else:
+                    log.warning("行业板块抓取%d轮全失败(不影响概念数据): %s",
+                                config.SNAPSHOT_RETRIES, str(e)[:80])
+        if ind_data:
             merged.update(ind_data)
-            log.info("合并概念+行业: 概念%d + 行业%d = %d", len(concept_data), len(ind_data), len(merged))
-        except Exception as e:
-            log.warning("行业板块抓取失败(不影响概念数据): %s", str(e)[:80])
+            log.info("合并概念+行业: 概念%d + 行业%d = %d",
+                     len(concept_data), len(ind_data), len(merged))
 
     return merged, source
 

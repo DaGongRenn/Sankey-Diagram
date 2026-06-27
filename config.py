@@ -65,6 +65,11 @@ AK_SECTOR_TYPE = {
 HTTP_TIMEOUT   = 12          # 单次请求超时(秒)
 HTTP_RETRIES   = 4           # 单次抓取的重试次数(会轮换 host)
 HTTP_BACKOFF   = 1.6         # 退避基数:第 i 次失败后 sleep BACKOFF**i 秒
+
+# 快照级重试:单次采集失败后,不等下一个轮询周期,立即重试整轮(换节点/换源)
+SNAPSHOT_RETRIES = 3         # 整个 fetch_snapshot 最多尝试几轮
+SNAPSHOT_RETRY_DELAY = 2.0   # 每轮之间的等待秒数(递增: delay*轮次)
+
 HTTP_HEADERS   = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
